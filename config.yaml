@@ -1,0 +1,570 @@
+variables:
+  $studyname: AllPubchem_test
+  $seed: 111
+  $clip_grad_norm: null
+  $lr: 0.001
+  $optimizer: adamw
+  $max_step: 5000
+  $max_len: 210
+  $pad_token: 0
+  $start_token: 1
+  $end_token: 2
+  $voc_size: 129
+  $PROJECT_DIR: /work/ga97/a97007/Transformers_VAE
+  $DATA_DIR: ./data
+  $opt_freq: 1
+  $scheduler_start: 0
+  $beta: 0.001
+  $emodel: 512
+  $dmodel: 512
+  $pooled_size: 1536
+  $lsize: 512
+  $dropout: 0
+  $pe_dropout: 0.0
+  $enc_num_layers: 8
+  $dec_num_layers: 8
+  $lafweight: 10.0
+training:
+  result_dir:
+    dirname: /work/ga97/a97007/Transformers_VAE/results/$TIMESTAMP_$studyname
+    duplicate: overwrite
+  data:
+    train:
+      type: bucket
+      datasets:
+        datasets:
+          input:
+            type: string
+            padding_value: 0
+            path_list: $DATA_DIR/Pubchem_chunk_pro_0_ran.pkl
+          target:
+            type: string
+            padding_value: 0
+            path_list: $DATA_DIR/Pubchem_chunk_pro_0_can.pkl
+      seed: 1
+      bucket_dset: input
+      batch_size:
+      - 500
+      - 500
+      - 500
+      - 500
+      - 416
+      - 357
+      - 312
+      - 277
+      - 250
+      - 208
+      - 178
+      - 156
+      - 138
+      - 125
+      - 100
+      - 60
+      bins:
+      - 20
+      - 30
+      - 40
+      - 50
+      - 60
+      - 70
+      - 80
+      - 90
+      - 100
+      - 120
+      - 140
+      - 160
+      - 180
+      - 200
+      - 250
+      bin_linspace: null
+      add_lower_margin: true
+      add_upper_margin: true
+    vals:
+      base:
+        type: bucket
+        datasets:
+          datasets:
+            input:
+              type: string
+              padding_value: 0
+              path_list: $DATA_DIR/AllPubchem_test_random.pkl
+            target:
+              type: string
+              padding_value: 0
+              path_list: $DATA_DIR/AllPubchem_test_canonical.pkl
+        seed: 1
+        bucket_dset: input
+        batch_size:
+        - 500
+        - 500
+        - 500
+        - 500
+        - 416
+        - 357
+        - 312
+        - 277
+        - 250
+        - 208
+        - 178
+        - 156
+        - 138
+        - 125
+        - 100
+        - 60
+        bin_linspace: null
+        bins:
+        - 20
+        - 30
+        - 40
+        - 50
+        - 60
+        - 70
+        - 80
+        - 90
+        - 100
+        - 120
+        - 140
+        - 160
+        - 180
+        - 200
+        - 250
+  optimizer:
+    type: adamw
+    lr: 0.001
+  schedule:
+    opt_freq: 1
+  pre_hooks:
+    notice:
+      type: notice_alarm
+      studyname: trial
+      alarm:
+        type: count
+        target: step
+        step: 25000
+        start: 25000
+      end: true
+    save:
+      type: save_alarm
+      alarm:
+        type: list
+        target: step
+        list:
+        - 0
+        - 10000
+        - 20000
+        - 30000
+        - 40000
+        - 50000
+        - 60000
+        - 80000
+        - 100000
+        - 120000
+        - 140000
+        - 160000
+        - 180000
+        - 200000
+        - 220000
+        - 250000
+        - 300000
+        - 400000
+        - 500000
+        - 1000000
+      end: true
+    checkpoint:
+      type: checkpoint_alarm
+      alarm:
+        type: count
+        target: step
+        step: 50000
+        start: 50000
+      end: true
+    validation:
+      type: validation_alarm
+      alarm:
+        type: count
+        target: step
+        step: 10000
+      end: true
+    step_abort:
+      type: step_abort
+      threshold: 400000
+    time_abort:
+      type: time_abort
+      threshold: 171500
+  post_hooks:
+    scheduler:
+      type: scheduler_alarm
+      alarm:
+        target: step
+        type: count
+        step: 1
+        start: 0
+      scheduler:
+        type: warmup
+        warmup: 8000
+  regularize_loss:
+    clip_grad_norm: null
+    normalize: true
+  verbose:
+    show_tqdm: true
+    loglevel:
+      stream: warning
+      file: debug
+  metrics:
+    Perfect accuracy:
+      type: perfect
+      input: forced
+      target: dec_target
+      pad_token: 0
+    Partial accuracy (greedy decode):
+      type: partial
+      input: greedy
+      target: dec_target
+      pad_token: 0
+    Partial accuracy (teacher forcing):
+      type: partial
+      input: forced
+      target: dec_target
+      pad_token: 0
+  accumulators:
+  - type: numpy
+    input: latent
+    org_type: torch.tensor
+    batch_dim: 0
+  - type: numpy
+    input: mu
+    org_type: torch.tensor
+    batch_dim: 0
+  - type: numpy
+    input: var
+    org_type: torch.tensor
+    batch_dim: 0
+  init_weight: false
+  init_seed: 1
+  train_loop:
+  - module: teacherforcer
+    input: target
+    output:
+    - dec_input
+    - dec_target
+  - module: masker
+    input: input
+    output: input_padding_mask
+  - module: enc_embedding
+    input: input
+    output: input_emb
+  - module: encoder
+    input:
+    - input_emb
+    - input_padding_mask
+    output: memory
+  - type: function
+    function:
+      type: transpose
+      dim0: 0
+      dim1: 1
+    input: input_padding_mask
+    output: input_padding_mask2
+  - module: pooler
+    input:
+    - memory
+    - input_padding_mask2
+    output: latent_base
+  - module: latent2mu
+    input: latent_base
+    output: mu
+  - module: latent2var
+    input: latent_base
+    output: var
+  - module: vae
+    input:
+      mu: mu
+      var: var
+    output: latent
+  - module: latent2dec
+    input: latent
+    output: dec_latent
+  - module: dec_embedding
+    input: dec_input
+  - module: decoder
+    input:
+      latent: dec_latent
+      tgt: dec_input
+    output: dec_output
+    mode: forced
+  - module: dec2proba
+    input: dec_output
+  - module: sequencece
+    input:
+    - dec_output
+    - dec_target
+    output: sequencece
+  - module: -d_kl
+    input:
+    - mu
+    - var
+    output: -d_kl
+  - module: -d_kl_factor
+    input: -d_kl
+  loss_names:
+  - sequencece
+  - -d_kl
+  val_loop:
+  - module: teacherforcer
+    input: target
+    output:
+    - dec_input
+    - dec_target
+    - dec_target_len
+    return_len: true
+  - module: masker
+    input: input
+    output: input_padding_mask
+  - module: enc_embedding
+    input: input
+  - module: encoder
+    input:
+    - input
+    - input_padding_mask
+    output: memory
+  - type: function
+    function:
+      type: transpose
+      dim0: 0
+      dim1: 1
+    input: input_padding_mask
+    output: input_padding_mask2
+  - module: pooler
+    input:
+    - memory
+    - input_padding_mask2
+    output: latent_base
+  - module: latent2mu
+    input: latent_base
+    output: mu
+  - module: latent2var
+    input: latent_base
+    output: var
+  - module: vae
+    input:
+      mu: mu
+      var: var
+    output: latent
+  - module: latent2dec
+    input: latent
+    output: dec_latent
+  - module: dec_embedding
+    input: dec_input
+  - module: decoder
+    input:
+      latent: dec_latent
+      tgt: dec_input
+    output: dec_output
+    mode: forced
+  - module: dec2proba
+    input: dec_output
+  - module: sequencece
+    input:
+    - dec_output
+    - dec_target
+    output: sequencece
+  - module: -d_kl
+    input:
+    - mu
+    - var
+    output: -d_kl
+  - module: dec_supporter
+    mode: force
+    input: dec_output
+    output: forced
+  - module: decoder
+    mode: prepare_cell_forward
+    input:
+      latent: dec_latent
+    output: state
+  - module: dec_supporter
+    mode: init
+    input:
+      batch_size: batch_size
+    output:
+    - cur_input
+    - greedy
+  - type: iterate
+    length: dec_target_len
+    processes:
+    - module: dec_embedding
+      input:
+        input: cur_input
+        position: iterate_i
+      output: cur_input
+    - module: decoder
+      mode: cell_forward
+      input:
+        tgt: cur_input
+        latent: dec_latent
+        state: state
+        position: iterate_i
+      output:
+      - cur_output
+      - state
+    - module: dec2proba
+      input: cur_output
+    - module: dec_supporter
+      mode: add
+      input:
+        cur_proba: cur_output
+        outs: greedy
+      output:
+      - cur_input
+      - greedy
+  - module: dec_supporter
+    input: greedy
+    output: greedy
+    mode: aggregate
+model:
+  modules:
+    teacherforcer:
+      type: TeacherForcer
+      length_dim: 1
+    masker:
+      type: MaskMaker
+      mask_token: 0
+      dtype: bool
+      direction: equal
+    enc_embedding:
+      type: PositionalEmbedding
+      embedding:
+        num_embeddings: 1123
+        embedding_dim: 512
+        padding_idx: 0
+      dropout: 0.0
+      max_len: 250
+    encoder:
+      type: TransformerEncoder
+      layer:
+        d_model: 512
+        nhead: 8
+        d_ff_factor: 4
+        dropout: 0.0
+        activation: newgelu
+        layer_norm_eps: 1.0e-09
+      n_layer: 8
+      init:
+        self_attn.in_proj_weight: glorot_uniform
+        self_attn.in_proj_bias: zero
+        self_attn.out_proj.weight: glorot_uniform
+        self_attn.out_proj.bias: zero
+        linear1.weight:
+          type: normal
+          mean: 0.0
+          std: 0.02
+        linear1.bias: zero
+        linear2.weight:
+          type: normal
+          mean: 0.0
+          std: 0.02
+        linear2.bias: zero
+    pooler:
+      type: NoAffinePooler
+      input_size:
+      - max_len
+      - batch_size
+      - 512
+    latent2mu:
+      type: Tunnel
+      input_size:
+      - batch_size
+      - 1536
+      layers:
+      - type: linear
+        size: 512
+        init:
+          bias: zero
+    latent2var:
+      type: Tunnel
+      input_size:
+      - batch_size
+      - 1536
+      layers:
+      - type: linear
+        size: 512
+        init:
+          bias: zero
+      - type: function
+        function:
+          type: softplus
+    vae:
+      type: VAE
+    latent2dec:
+      type: Tunnel
+      input_size:
+      - batch_size
+      - 512
+      layers:
+      - type: affine
+        weight: 10.0
+        bias: 0.0
+      - type: linear
+        size: 512
+        init:
+          bias: zero
+    dec_embedding:
+      type: PositionalEmbedding
+      embedding:
+        num_embeddings: 129
+        embedding_dim: 512
+        padding_idx: 0
+      dropout: 0.0
+      max_len: 250
+    decoder:
+      type: AttentionDecoder
+      max_len: 250
+      layer:
+        d_model: 512
+        nhead: 8
+        dropout: 0.0
+        layer_norm_eps: 1.0e-09
+        activation: newgelu
+        d_ff_factor: 4
+      num_layers: 8
+      init:
+        self_attn.in_proj_weight: glorot_uniform
+        self_attn.in_proj_bias: zero
+        self_attn.out_proj.weight: glorot_uniform
+        self_attn.out_proj.bias: zero
+        linear1.weight:
+          type: normal
+          mean: 0.0
+          std: 0.02
+        linear1.bias: zero
+        linear2.weight:
+          type: normal
+          mean: 0.0
+          std: 0.02
+        linear2.bias: zero
+    dec2proba:
+      type: Tunnel
+      input_size:
+      - batch_size
+      - length
+      - 512
+      layers:
+      - type: layernorm
+        args:
+          elementwise_affine: false
+      - type: linear
+        size: 129
+        init:
+          bias: zero
+    dec_supporter:
+      type: GreedyDecoder
+      start_token: 1
+    sequencece:
+      type: CrossEntropyLoss
+      reduction: sum
+      ignore_index: 0
+    -d_kl:
+      type: MinusD_KLLoss
+    -d_kl_factor:
+      type: Affine
+      weight: 0.001
