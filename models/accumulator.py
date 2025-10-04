@@ -1,4 +1,5 @@
-import sys, os
+# Need All
+import os
 import pickle
 import numpy as np
 
@@ -24,8 +25,10 @@ class NumpyAccumulator:
         else:
             raise ValueError(f"Unsupported type of config.org_type: {org_type} in NumpyAccumulator")
         self.batch_dim = batch_dim
+
     def init(self):
         self.accums = []
+
     def accumulate(self, indices=None):  
         if self.accums[0].ndim == 3:
             mid_values = [arr.shape[1] for arr in self.accums]
@@ -66,8 +69,11 @@ class NumpyAccumulator:
         path = path_without_ext + ".npy"
         os.makedirs(os.path.dirname(path), exist_ok=True)
         np.save(path, self.accumulate(indices=indices))
+        
     def __call__(self, batch):
         self.accums.append(self.converter(batch[self.input]))
+
+
 class ListAccumulator:
     def __init__(self, logger, input, org_type='torch.tensor', batch_dim=None, **kwargs):
         """
@@ -114,5 +120,6 @@ accumulator_type2class = {
     'numpy': NumpyAccumulator,
     'list': ListAccumulator
 }
+
 def get_accumulator(type, **kwargs):
     return accumulator_type2class[type](**kwargs)

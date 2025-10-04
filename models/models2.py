@@ -1,4 +1,4 @@
-import sys, os
+import os
 import math
 import logging
 from collections import OrderedDict
@@ -17,6 +17,7 @@ PRINT_PROCESS = False
 def NewGELU(input):
     return 0.5 * input * (1.0 + torch.tanh(math.sqrt(2.0 / math.pi) \
         * (input + 0.044715 * torch.pow(input, 3.0))))
+
 def sigmoid(input):
     return 1/(1+math.e**(-input))
 
@@ -96,6 +97,7 @@ function_name2func = {
     'transpose': torch.transpose,
     'argmax': torch.argmax
 }
+
 def function_config2func(config):
     if isinstance(config, str):
         return function_name2func[config]
@@ -125,6 +127,7 @@ def get_module(logger, type, **kwargs):
     if len(kwargs) > 0:
         logger.warning(f"Unknown kwarg in {cls.__name__}: {kwargs}")
     return cls(**uargs)
+
 class Model(nn.ModuleDict):
     def __init__(self, logger: logging.Logger, modules: dict, use_modules:list=None,
             omit_modules: list=None, seed=None, init: dict = {}):
@@ -162,6 +165,7 @@ class Model(nn.ModuleDict):
                         print(f"  {key}: {type(value).__name__}")
             process(self, batch)
         return batch
+    
     def load(self, path, replace={}, strict=True):
         if os.path.isfile(path):
             device = list(self.parameters())[0].device
@@ -208,6 +212,7 @@ class Model(nn.ModuleDict):
                 raise ValueError(f"Invalid file: {path}")
             else:
                 raise FileNotFoundError(f"No such file or directory: {path}")    
+            
     def save_state_dict(self, path):
         os.makedirs(path, exist_ok=True)
         for key, module in self.items():

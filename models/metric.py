@@ -1,5 +1,6 @@
+# Need All
+
 from collections import defaultdict
-import itertools
 import numpy as np
 import torch
 from .utils import check_leftargs
@@ -11,14 +12,19 @@ class Metric:
         check_leftargs(self, logger, kwargs)
         self.val_name = ''
         self.name = name
+    
     def set_val_name(self, val_name):
         self.val_name = val_name
+    
     def init(self):
         raise NotImplementedError
+    
     def add(self, batch):
         raise NotImplementedError
+    
     def calc(self):
         raise NotImplementedError
+    
     def __call__(self, batch):
         self.add(batch)
 
@@ -50,9 +56,11 @@ class BinaryMetric(Metric):
         self.is_multitask = is_multitask
         self.input_process = input_process
         self.task_names = task_names
+    
     def init(self):
         self.targets = defaultdict(list)
         self.inputs = defaultdict(list)
+    
     def add(self, batch):
         self.targets[self.val_name].append(batch[self.target].cpu().numpy())
         input = batch[self.input]
@@ -64,6 +72,7 @@ class BinaryMetric(Metric):
         if not self.is_logit:
             input = input[..., 1]
         self.inputs[self.val_name].append(input)
+    
     def calc(self, scores):
         total_inputs = []
         total_targets = []
@@ -95,6 +104,7 @@ class BinaryMetric(Metric):
 class AUROCMetric(BinaryMetric):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+    
     def calc_score(self, y_true, y_score):
         if np.all(y_true == y_true[0]):
             return 0
@@ -103,6 +113,7 @@ class AUROCMetric(BinaryMetric):
 class AUPRMetric(BinaryMetric):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+    
     def calc_score(self, y_true, y_score):
         if np.all(y_true == y_true[0]):
             return 0
@@ -111,24 +122,29 @@ class AUPRMetric(BinaryMetric):
 class RMSEMetric(BinaryMetric):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+    
     def calc_score(self, y_true, y_score):
         return np.sqrt(mean_squared_error(y_true=y_true, y_pred=y_score))
 class MAEMetric(BinaryMetric):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+    
     def calc_score(self, y_true, y_score):
         return mean_absolute_error(y_true=y_true, y_pred=y_score)
 class R2Metric(BinaryMetric):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+    
     def calc_score(self, y_true, y_score):
         return r2_score(y_true=y_true, y_pred=y_score)
 
 class MeanMetric(Metric):
     def __init__(self, logger, name, **kwargs):
         super().__init__(logger, name, **kwargs)
+    
     def init(self):
         self.scores = defaultdict(list)
+    
     def calc(self, scores):
         total_values = []
         for val_name, values in self.scores.items():
@@ -145,6 +161,7 @@ class MeanMetric(Metric):
 class ValueMetric(MeanMetric):
     def __init__(self, logger, name, **kwargs):
         super().__init__(logger, name, **kwargs)
+
     def add(self, batch):
         self.scores[self.val_name].append(batch[self.name].cpu().numpy())
 class PerfectAccuracyMetric(MeanMetric):
@@ -154,6 +171,7 @@ class PerfectAccuracyMetric(MeanMetric):
         self.input = input
         self.target = target
         self.pad_token = pad_token
+
     def add(self, batch):
         self.scores[self.val_name].append(torch.all((batch[self.input] == batch[self.target])
             ^(batch[self.target] == self.pad_token), axis=1).cpu().numpy())
@@ -164,12 +182,14 @@ class PartialAccuracyMetric(MeanMetric):
         self.input = input
         self.target = target
         self.pad_token = pad_token
+
     def add(self, batch):
         target_seq = batch[self.target]
         pred_seq = batch[self.input]
         pad_mask = (target_seq != self.pad_token).to(torch.int)
         self.scores[self.val_name].append((torch.sum((target_seq == pred_seq)*pad_mask, dim=1)
             /torch.sum(pad_mask, dim=1)).cpu().numpy())
+        
 metric_type2class = {
     'value': ValueMetric,
     'auroc': AUROCMetric,

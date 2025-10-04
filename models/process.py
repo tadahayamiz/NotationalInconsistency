@@ -1,4 +1,10 @@
+# All Need
+import torch
+import numpy as np
+
 from .models2 import function_config2func, PRINT_PROCESS
+# FunctionProcessとIterateProcessにて呼ばれているのでmodels2が消せない
+
 class Process:
     def __init__(self):
         pass
@@ -31,6 +37,7 @@ class CallProcess(Process):
                 batch[oname] = o
         else:
             raise ValueError(f'Unsupported type of output: {self.output}')
+        
     def get_callable(self, model):
         raise NotImplementedError
 class ForwardProcess(CallProcess):
@@ -50,8 +57,10 @@ class ForwardProcess(CallProcess):
         """
         super().__init__(input, output, **kwargs)
         self.module = module
+
     def get_callable(self, model):
         return  model[self.module]
+    
 class FunctionProcess(CallProcess):
     def __init__(self, function, input, output=None, **kwargs):
         """
@@ -69,11 +78,10 @@ class FunctionProcess(CallProcess):
         """
         super().__init__(input, output, **kwargs)
         self.function = function_config2func(function)
+
     def get_callable(self, model):
         return self.function
 
-import torch
-import numpy as np
 class IterateProcess(Process):
     def __init__(self, length, processes, i_name='iterate_i'):
         """
@@ -89,6 +97,7 @@ class IterateProcess(Process):
         self.length = length
         self.processes = [get_process(**process) for process in processes]
         self.i_name = i_name
+
     def __call__(self, model, batch):
         if isinstance(self.length, int): length = self.length
         else: length = batch[self.length]
@@ -113,7 +122,6 @@ process_type2class = {
     'function': FunctionProcess,
     'iterate': IterateProcess
 }
+
 def get_process(type='forward', **kwargs):
     return process_type2class[type](**kwargs)
-def get_process_from_config(config):
-    return get_process(**config)

@@ -1,9 +1,11 @@
+# All Need
 import os
 import time
 from collections import defaultdict
 import numpy as np
 import pandas as pd
 import torch
+
 from .alarm import get_alarm
 
 
@@ -15,6 +17,7 @@ class AlarmHook:
             alarm = [alarm]
         self.alarms = [get_alarm(logger=logger, **a) for a in alarm]
         self.end = end
+
     def __call__(self, batch, model):
         ring = False
         for alarm in self.alarms:
@@ -22,14 +25,17 @@ class AlarmHook:
                 ring = True
         if ring or ('end' in batch and self.end):
             self.ring(batch=batch, model=model)
+
     def ring(self, batch, model):
         raise NotImplementedError
+    
 class SaveAlarmHook(AlarmHook):
     def __init__(self, logger, result_dir, 
         alarm={'type': 'silent', 'target': 'step'}, end=False):
         super().__init__(logger, result_dir, alarm, end=end)
         self.models_dir = f"{result_dir}/models"
         os.makedirs(self.models_dir, exist_ok=True)
+
     def ring(self, batch, model):
         self.logger.info(f"Saving model at step {batch['step']:2>}...")
         path = f"{self.models_dir}/{batch['step']}"
@@ -73,6 +79,7 @@ class AbortHook:
         """
         self.target = target
         self.threshold = threshold
+
     def __call__(self, batch, model):
         if self.target in batch and \
             batch[self.target] >= self.threshold:
@@ -105,5 +112,6 @@ hook_type2class = {
     'epoch_abort': EpochAbortHook,
     'time_abort': TimeAbortHook
 }
+
 def get_hook(type, **kwargs):
     return hook_type2class[type](**kwargs)

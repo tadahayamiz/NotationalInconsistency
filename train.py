@@ -16,20 +16,19 @@ import pandas as pd
 import torch
 import random
 import shutil
-from collections import defaultdict
 from tqdm import tqdm
 import gc
 
-from tools.notice import notice, noticeerror
 from tools.path import make_result_dir, timestamp
 from tools.logger import default_logger
 from tools.args import load_config2, subs_vars
+from tools.tools import nullcontext
+
 from models.dataset import get_dataloader
 from models.accumulator import get_accumulator, NumpyAccumulator
 from models.metric import get_metric
 from models.optimizer import get_optimizer, get_scheduler
 from models.process import get_process
-from tools.tools import nullcontext
 from models.hooks import AlarmHook, hook_type2class, get_hook
 from models import Model
 
@@ -41,6 +40,7 @@ def save_rstate(dirname):
         pickle.dump(np.random.get_state(), f)
     torch.save(torch.get_rng_state(), f"{dirname}/torch.pt")
     torch.save(torch.cuda.get_rng_state_all(), f"{dirname}/cuda.pt")
+
 def set_rstate(config):
     if 'random' in config:
         with open(config.random, 'rb') as f:
@@ -189,6 +189,7 @@ def main(config, args=None):
             super().__init__(**kwargs)
             os.makedirs(f"{result_dir}/checkpoints", exist_ok=True)
             self.checkpoint_steps = []
+
         def ring(self, batch, model: Model):
             if batch['step'] in self.checkpoint_steps: return
             checkpoint_dir = f"{result_dir}/checkpoints/{batch['step']}"

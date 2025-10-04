@@ -1,3 +1,4 @@
+# All Need
 import math
 from collections import defaultdict
 import torch
@@ -100,9 +101,11 @@ class LookaheadOptimizer(optim.Optimizer):
             slow = param_state['slow_buffer']
             slow.add_(fast_p.data - slow, alpha=group['lookahead_alpha'])
             fast_p.data.copy_(slow)
+
     def sync_lookahead(self):
         for group in self.param_groups:
             self.update_slow(group)
+
     def step(self, closure=None):
         #assert id(self.param_groups) == id(self.base_optimizer.param_groups)
         loss = self.base_optimizer.step(closure)
@@ -111,6 +114,7 @@ class LookaheadOptimizer(optim.Optimizer):
             if group['lookahead_step'] % group['lookahead_k'] == 0:
                 self.update_slow(group)
         return loss
+    
     def state_dict(self):
         fast_state_dict = self.base_optimizer.state_dict()
         slow_state = {
@@ -124,6 +128,7 @@ class LookaheadOptimizer(optim.Optimizer):
             'slow_state': slow_state,
             'param_groups': param_groups,
         }
+    
     def load_state_dict(self, state_dict):
         fast_state_dict = {
             'state': state_dict['state'],
@@ -156,6 +161,7 @@ optimizer_type2class = {
     'radam': RAdam,
     'lookahead': LookaheadOptimizer
 }
+
 def get_optimizer(type, **kwargs):
     return optimizer_type2class[type](**kwargs)
 
@@ -164,6 +170,7 @@ scheduler_type2class = {
     'linear': lr_scheduler.LinearLR,
     'exponential': lr_scheduler.ExponentialLR
 }
+
 def get_scheduler(optimizer, type, last_epoch=-1, **kwargs):
     if type in scheduler_type2class:
         return scheduler_type2class[type](optimizer=optimizer, **kwargs)
