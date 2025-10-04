@@ -188,7 +188,7 @@ def main():
     )
     parser.add_argument(
         "--output_dir", type=Path, default=None,
-        help="Directory to write pickles (default: input_dir/result)."
+        help="Directory to write pickles (default: input_dir)."
     )
     parser.add_argument(
         "--vocab", type=Path, default=None,
@@ -206,7 +206,7 @@ def main():
     args = parser.parse_args()
 
     input_dir: Path = args.input_dir
-    output_dir: Path = args.output_dir or (input_dir / "result")
+    output_dir: Path = args.output_dir or input_dir
     vocab_csv = _resolve_vocab_path(input_dir, args.vocab)
 
     print(f"Input dir : {input_dir}")

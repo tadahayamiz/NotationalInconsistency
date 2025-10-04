@@ -116,7 +116,7 @@ def main():
     ap = argparse.ArgumentParser(description="Canonicalize & randomize SMILES for PubChem chunks.")
     ap.add_argument("--input_dir", required=True, type=Path, help="Directory containing Pubchem_chunk_*.csv files")
     ap.add_argument("--output_dir", type=Path, default=None,
-                    help="Directory for processed CSVs (default: input_dir/result)")
+                    help="Directory for processed CSVs (default: input_dir)")
     ap.add_argument("--start", type=int, default=None, help="Minimum chunk ID to process (inclusive)")
     ap.add_argument("--end", type=int, default=None, help="Maximum chunk ID to process (inclusive)")
     ap.add_argument("--workers", type=int, default=0, help="Number of parallel workers (0 or 1 = sequential)")
@@ -124,7 +124,7 @@ def main():
     args = ap.parse_args()
 
     input_dir: Path = args.input_dir
-    output_dir: Path = args.output_dir or (input_dir / "result")
+    output_dir: Path = args.output_dir or input_dir
 
     pairs = discover_chunks(input_dir, start=args.start, end=args.end)
     if not pairs:
