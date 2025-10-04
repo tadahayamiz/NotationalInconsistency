@@ -11,7 +11,7 @@ variables:
   $end_token: 2
   $voc_size: 129
   $PROJECT_DIR: /work/ga97/a97007/Transformers_VAE
-  $DATA_DIR: ./data
+  $DATA_DIR: ../data
   $opt_freq: 1
   $scheduler_start: 0
   $beta: 0.001

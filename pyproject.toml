@@ -1,0 +1,54 @@
+# ===================================================================
+#  build system
+# ===================================================================
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+
+# ===================================================================
+#  meta data
+# ===================================================================
+[project]
+name = "notate"
+
+version = "0.2.0"
+
+description = "Notational inconsistency impacts."
+
+readme = "README.md"
+
+requires-python = ">=3.9"
+
+authors = [
+  { name="Yosuke Kikuchi", email="uo.ko.teen18@gmail.com" },
+  { name="Tadahaya Mizuno", email="tadahaya@gmail.com" },
+]
+
+license = { text="MIT" }
+
+
+# -------------------------------------------------------------------
+#  requirements
+# -------------------------------------------------------------------
+dependencies = [
+    "numpy",
+    "pandas",
+    "scikit-learn",
+    "tqdm",
+    "matplotlib",
+]
+
+
+# ===================================================================
+#  optional dependencies
+# ===================================================================
+[project.optional-dependencies]
+dev = [
+    "jupyterlab",
+    "ipykernel",
+    "black",  
+    "ruff",   
+    "isort",  
+    # "pytest",
+]
