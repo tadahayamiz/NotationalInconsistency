@@ -1,0 +1,12 @@
+pandas
+numpy
+matplotlib
+requests
+pydrive2
+
+# smiles.py
+rdkit
+tqdm
+
+# gdrive.py
+pydrive2

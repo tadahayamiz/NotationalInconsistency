@@ -1,0 +1,51 @@
+#! /bin/bash
+set -e -o pipefail
+function epython () {
+    argv=("$@")
+    local pre_argv=()
+    local is_leaf=1
+    for i_arg in `seq 0 $(($# - 1))`
+    do
+        arg="${argv[$i_arg]}"
+        net_arg=${arg#*---}
+        if [ $net_arg = $arg ]; then
+            pre_argv+=($arg)
+        else
+            pre_argv+=( "--${net_arg}" )
+            local array_args=()
+            local post_i_arg_start=-1
+            for i_arg in `seq $(($i_arg+1)) $(($#-1)) `
+            do
+                aarg="${argv[$i_arg]}"
+                if [ ${aarg#*--} = $aarg ]; then
+                    array_args+=( $aarg )
+                else
+                    post_i_arg_start=$i_arg
+                    break
+                fi      
+            done
+            local post_argv=()
+            if [ $post_i_arg_start -ne -1 ]; then
+                for i_arg in `seq $post_i_arg_start $(($#-1))`
+                do
+                    post_argv+=("${argv[$i_arg]}")
+                done
+            fi
+            local temp_argv=()
+            for aarg in ${array_args[@]}
+            do
+                temp_argv=()
+                temp_argv+=(${pre_argv[@]})
+                temp_argv+=($aarg)
+                temp_argv+=(${post_argv[@]})
+                epython ${temp_argv[@]}
+            done
+            is_leaf=0
+            break
+        fi
+    done
+    if [ $is_leaf = 1 ]; then
+        python ${argv[@]}
+    fi
+}
+epython "$@"
