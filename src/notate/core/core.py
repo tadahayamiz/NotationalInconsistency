@@ -141,6 +141,12 @@ def resolve_module_class(type_name: str):
     - If dotted: import directly.
     - Else: try local 'modules' package and common name variants.
     """
+    try:
+        import importlib
+        importlib.import_module("notate.modules")
+    except Exception:
+        pass
+
     if "." in type_name:
         module_path, cls_name = type_name.rsplit(".", 1)
         return _lazy_import(module_path, cls_name)
