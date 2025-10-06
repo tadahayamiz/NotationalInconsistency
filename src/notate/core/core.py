@@ -223,6 +223,106 @@ def function_config2func(fcfg: Mapping[str, Any]) -> Callable:
 
 
 # ------------------------------------------------------------------------------
+# Initialization function resolver
+# ------------------------------------------------------------------------------
+def init_config2func(icfg: Mapping[str, Any]) -> Callable:
+    """
+    Convert an initialization config dict into a Python callable.
+    
+    Expected format:
+      icfg = {"type": "<init_type>", ...extra kwargs...}
+    
+    Returns a function that can initialize a parameter tensor.
+    """
+    if not isinstance(icfg, Mapping) or "type" not in icfg:
+        raise ValueError(f"init_config2func: invalid config {icfg}")
+    
+    itype = icfg.get("type")
+    
+    # Common PyTorch initializations
+    if itype == "normal":
+        def _fn(param):
+            import torch.nn as nn
+            mean = icfg.get("mean", 0.0)
+            std = icfg.get("std", 1.0)
+            nn.init.normal_(param, mean=mean, std=std)
+        return _fn
+    
+    if itype == "uniform":
+        def _fn(param):
+            import torch.nn as nn
+            a = icfg.get("a", 0.0)
+            b = icfg.get("b", 1.0)
+            nn.init.uniform_(param, a=a, b=b)
+        return _fn
+    
+    if itype == "xavier_uniform":
+        def _fn(param):
+            import torch.nn as nn
+            gain = icfg.get("gain", 1.0)
+            nn.init.xavier_uniform_(param, gain=gain)
+        return _fn
+    
+    if itype == "xavier_normal":
+        def _fn(param):
+            import torch.nn as nn
+            gain = icfg.get("gain", 1.0)
+            nn.init.xavier_normal_(param, gain=gain)
+        return _fn
+    
+    if itype == "kaiming_uniform":
+        def _fn(param):
+            import torch.nn as nn
+            a = icfg.get("a", 0)
+            mode = icfg.get("mode", "fan_in")
+            nonlinearity = icfg.get("nonlinearity", "leaky_relu")
+            nn.init.kaiming_uniform_(param, a=a, mode=mode, nonlinearity=nonlinearity)
+        return _fn
+    
+    if itype == "kaiming_normal":
+        def _fn(param):
+            import torch.nn as nn
+            a = icfg.get("a", 0)
+            mode = icfg.get("mode", "fan_in")
+            nonlinearity = icfg.get("nonlinearity", "leaky_relu")
+            nn.init.kaiming_normal_(param, a=a, mode=mode, nonlinearity=nonlinearity)
+        return _fn
+    
+    if itype == "constant":
+        def _fn(param):
+            import torch.nn as nn
+            val = icfg.get("val", 0.0)
+            nn.init.constant_(param, val)
+        return _fn
+    
+    if itype == "zeros":
+        def _fn(param):
+            import torch.nn as nn
+            nn.init.zeros_(param)
+        return _fn
+    
+    if itype == "ones":
+        def _fn(param):
+            import torch.nn as nn
+            nn.init.ones_(param)
+        return _fn
+    
+    if itype == "eye":
+        def _fn(param):
+            import torch.nn as nn
+            nn.init.eye_(param)
+        return _fn
+    
+    # Default: do nothing (identity)
+    if itype == "identity" or itype is None:
+        def _fn(param):
+            pass
+        return _fn
+    
+    raise KeyError(f"init_config2func: unknown initialization type '{itype}' in {icfg}")
+
+
+# ------------------------------------------------------------------------------
 # Class resolver (ROBUST)
 # ------------------------------------------------------------------------------
 def resolve_module_class(type_name: str) -> Type:
