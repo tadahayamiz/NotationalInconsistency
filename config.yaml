@@ -10,6 +10,10 @@
 variables:
   $study: "AllPubchem_test"
 
+result_dir:
+  dirname: "./result/${timestamp}_${study}"
+  duplicate: "merge"
+
 model:
   # ここは既存のモデル定義をそのまま置いてください（エンコーダ/デコーダ/埋め込み等）
   # 例:
@@ -43,10 +47,6 @@ model:
 training:
   gpuid: 0
   timestamp: "$TIMESTAMP"
-
-  result_dir:
-    dirname: "./result/${timestamp}_${study}"
-    duplicate: "merge"  # or "new"
 
   verbose:
     show_tqdm: true
