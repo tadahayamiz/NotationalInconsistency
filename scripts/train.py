@@ -81,6 +81,9 @@ def main():
 
     # --- variables expansion ($TIMESTAMP 等)
     vars_dict = {"$TIMESTAMP": timestamp()}
+    if "variables" in cfg and isinstance(cfg.variables, dict):
+        # 例: {"$studyname": "...", "$seed": 111, ...}
+        vars_dict.update(cfg.variables)
     cfg = ADict(subs_vars(cfg, vars_dict))
 
     # --- result_dir: dirname 方式に統一
