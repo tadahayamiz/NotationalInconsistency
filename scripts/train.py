@@ -5,6 +5,9 @@ from typing import Any, Dict, List, Union
 import torch
 from addict import Dict as ADict
 
+# Ensure notate package and all modules are properly initialized
+import notate  # This should trigger all module registrations
+
 from notate.tools.path import make_result_dir, timestamp
 from notate.tools.logger import default_logger
 from notate.tools.args import subs_vars
