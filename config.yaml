@@ -1,283 +1,242 @@
-# ==== config.yaml (production-like; bucket loader; reduced size) ====
+# ============================================
+# config.yaml  (Plan-A ready / single-entry process)
+# --------------------------------------------
+# ・processブロックは残す（ForwardProcess を使用）
+# ・入口moduleは "pipeline"（新規 PipelineModule）に一本化
+# ・training.train_loop / val_loop / loss_names は従来どおり保持
+# ・scripts/train.py系/あなたのtrain.py系の双方で読める形
+# ============================================
 
 variables:
-  $studyname: AllPubchem_test
-  $seed: 111
-  $lr: 0.001
-  $optimizer: adamw
-  $max_step: 5000
-  $max_len: 210
-  $pad_token: 0
-  $start_token: 1
-  $end_token: 2
-  $voc_size: 129
-  $PROJECT_DIR: .
-  $DATA_DIR: ./data
-  $opt_freq: 1
-  $scheduler_start: 0
-  $beta: 0.001
-  $emodel: 512
-  $dmodel: 512
-  $pooled_size: 1536
-  $lsize: 512
-  $dropout: 0
-  $pe_dropout: 0.0
-  $enc_num_layers: 8
-  $dec_num_layers: 8
-  $lafweight: 10.0
+  $study: "AllPubchem_test"
 
-logging:
-  stream_level: info
-  file_level: debug
+model:
+  # ここは既存のモデル定義をそのまま置いてください（エンコーダ/デコーダ/埋め込み等）
+  # 例:
+  # modules:
+  #   enc_embedding: { type: EncEmbedding,  ... }
+  #   encoder:       { type: Encoder,       ... }
+  #   pooler:        { type: Pooler,        ... }
+  #   latent2mu:     { type: Affine,        out_dim: 512 }
+  #   latent2var:    { type: Affine,        out_dim: 512 }
+  #   vae:           { type: VAESampler }
+  #   latent2dec:    { type: Affine,        out_dim: 512 }
+  #   dec_embedding: { type: DecEmbedding,  ... }
+  #   decoder:       { type: Decoder,       ... }
+  #   dec2proba:     { type: LinearHead,    ... }
+  #   sequencece:    { type: SequenceCE }
+  #   -d_kl:         { type: KLDivergence }
+  #   -d_kl_factor:  { type: Scale,         factor: 0.001 }
+  #   teacherforcer: { type: TeacherForcer }
+  #   masker:        { type: PaddingMasker }
+  #   dec_supporter: { type: DecodingSupporter }
+  #
+  # ↓↓↓ 入口を1本化するための“実行器”モジュール（新規追加） ↓↓↓
+  modules:
+    pipeline:
+      type: PipelineModule
+      # trainingセクションを参照して二重管理を避ける（対応していない場合は下の内容をコピペでも可）
+      train_loop: ${training.train_loop}
+      val_loop:   ${training.val_loop}
+      loss_names: ${training.loss_names}
 
-# scripts/train.py の仕様に合わせて top-level に
-result_dir:
-  dirname: "./result/$TIMESTAMP_$studyname"
-  duplicate: "merge"
+training:
+  gpuid: 0
+  timestamp: "$TIMESTAMP"
 
-# ---- Data (元の bucket を尊重しつつ縮小) ----
-data:
-  train:
-    type: bucket
-    seed: 1
-    bucket_dset: input
-    # 小規模動作用にバッチ配列を縮小
-    batch_size: [128, 96, 64, 48, 32, 16]
-    bins:       [20, 40, 60, 80, 100, 120, 140, 160]
-    bin_linspace: null
-    add_lower_margin: true
-    add_upper_margin: true
-    datasets:
+  result_dir:
+    dirname: "./result/${timestamp}_${study}"
+    duplicate: "merge"  # or "new"
+
+  verbose:
+    show_tqdm: true
+    loglevel:
+      stream: "info"
+      file:   "debug"
+
+  # 再現性・挙動
+  detect_anomaly: false
+  deterministic: false
+  model_seed: 111
+
+  # 途中から読み込む場合に使用（不要なら空でOK）
+  init_weight: {}
+  optimizer_init_weight:
+
+  # -------------------------
+  # Data Loader（あなたの既存の定義を入れてください）
+  # scripts/train.py の update_dataloader_for_epoch() が以下のキーを更新する想定:
+  #   training.data.train.datasets.datasets.input.path_list
+  #   training.data.train.datasets.datasets.target.path_list
+  # -------------------------
+  data:
+    train:
+      type: pkl_pair               # FIXME: あなたの get_dataloader 実装の type 名に合わせてください
+      batch_size: 256              # FIXME
+      shuffle: true
+      # 下は update_dataloader_for_epoch() で差し替えられる想定のパス構造
       datasets:
-        input:
-          type: string
-          padding_value: 0
-          path_list: "$DATA_DIR/AllPubchem_test_random.pkl"
-        target:
-          type: string
-          padding_value: 0
-          path_list: "$DATA_DIR/AllPubchem_test_canonical.pkl"
-
-  vals:
-    - type: bucket
-      seed: 1
-      bucket_dset: input
-      batch_size: [128, 96, 64, 48, 32, 16]
-      bins:       [20, 40, 60, 80, 100, 120, 140, 160]
-      bin_linspace: null
-      datasets:
+        type: paired
         datasets:
           input:
-            type: string
-            padding_value: 0
-            path_list: "$DATA_DIR/AllPubchem_test_random.pkl"
+            type: pkl
+            path_list: "./data/Pubchem_chunk_pro_0_ran.pkl"
           target:
-            type: string
-            padding_value: 0
-            path_list: "$DATA_DIR/AllPubchem_test_canonical.pkl"
+            type: pkl
+            path_list: "./data/Pubchem_chunk_pro_0_can.pkl"
+    vals:
+      # 例: 検証データを複数名前付きで
+      valid:
+        type: pkl_pair             # FIXME
+        batch_size: 256
+        shuffle: false
+        datasets:
+          type: paired
+          datasets:
+            input:
+              type: pkl
+              path_list: "./data/Pubchem_chunk_pro_0_ran.pkl"
+            target:
+              type: pkl
+              path_list: "./data/Pubchem_chunk_pro_0_can.pkl"
 
-# ---- Optimizer / Scheduler ----
-optimizer:
-  type: "$optimizer"   # adamw
-  lr: $lr
-  weight_decay: 0.01
-  betas: [0.9, 0.999]
-  eps: 1.0e-8
+  # -------------------------
+  # Optimizer / Scheduler
+  # -------------------------
+  optimizer:
+    type: adamw
+    lr: 1.0e-3
+    weight_decay: 0.0
+    betas: [0.9, 0.999]
 
-scheduler:
-  type: warmup
-  warmup: 800          # 元は post_hooks.scheduler で warmup: 8000 → 短めに
+  schedule:
+    opt_freq: 1
+  scheduler:
+    type: warmup
+    warmup: 800
+    last_epoch: -1
 
-# ---- Hooks（実在タイプのみ）----
-pre_hooks:
-  notice:
-    type: notice_alarm
-    studyname: "$studyname"
-    alarm: { type: count, target: step, step: 2500, start: 2500 }
-    end: true
-  save:
-    type: save_alarm
-    alarm:
-      type: list
-      target: step
-      list: [0, 1000, 2000, 3000, 4000, 5000]
-    end: true
-  step_abort:
-    type: step_abort
-    threshold: 50000
-  time_abort:
-    type: time_abort
-    threshold: 7200
+  # -------------------------
+  # ループ定義（従来どおり保持）
+  # -------------------------
+  train_loop:
+    - { module: teacherforcer,  input: target,                                    output: [dec_input, dec_target] }
+    - { module: masker,         input: input,                                     output: input_padding_mask }
+    - { module: enc_embedding,  input: input,                                     output: input_emb }
+    - { module: encoder,        input: [input_emb, input_padding_mask],           output: memory }
+    - { type: function, function: { type: transpose, dim0: 0, ...1: 1 }, input: input_padding_mask, output: input_padding_mask2 }
+    - { module: pooler,         input: [memory, input_padding_mask2],             output: latent_base }
+    - { module: latent2mu,      input: latent_base,                               output: mu }
+    - { module: latent2var,     input: latent_base,                               output: var }
+    - { module: vae,            input: { mu: mu, var: var },                      output: latent }
+    - { module: latent2dec,     input: latent,                                    output: dec_latent }
+    - { module: dec_embedding,  input: dec_input }
+    - { module: decoder,        input: { latent: dec_latent, tgt: dec_input },    output: dec_output, mode: forced }
+    - { module: dec2proba,      input: dec_output }
+    - { module: sequencece,     input: [dec_output, dec_target],                  output: sequencece }
+    - { module: -d_kl,          input: [mu, var],                                 output: -d_kl }
+    - { module: -d_kl_factor,   input: -d_kl }
 
-# ---- Metrics（元のまま）----
-metrics:
-  Perfect accuracy:
-    type: perfect
-    input: forced
-    target: dec_target
-    pad_token: $pad_token
-  Partial accuracy (greedy decode):
-    type: partial
-    input: greedy
-    target: dec_target
-    pad_token: $pad_token
-  Partial accuracy (teacher forcing):
-    type: partial
-    input: forced
-    target: dec_target
-    pad_token: $pad_token
+  loss_names: [sequencece, -d_kl]
 
-# ---- Model（元のまま / CamelCase）----
-model:
-  modules:
-    teacherforcer:
-      type: TeacherForcer
-      length_dim: 1
-    masker:
-      type: MaskMaker
-      mask_token: 0
-      dtype: bool
-      direction: equal
-    enc_embedding:
-      type: PositionalEmbedding
-      embedding: { num_embeddings: 1123, embedding_dim: 512, padding_idx: 0 }
-      dropout: 0.0
-      max_len: 250
-    encoder:
-      type: TransformerEncoder
-      layer:
-        d_model: 512
-        nhead: 8
-        d_ff_factor: 4
-        dropout: 0.0
-        activation: newgelu
-        layer_norm_eps: 1.0e-09
-      n_layer: 8
-      init:
-        self_attn.in_proj_weight: glorot_uniform
-        self_attn.in_proj_bias: zero
-        self_attn.out_proj.weight: glorot_uniform
-        self_attn.out_proj.bias: zero
-        linear1.weight: { type: normal, mean: 0.0, std: 0.02 }
-        linear1.bias: zero
-        linear2.weight: { type: normal, mean: 0.0, std: 0.02 }
-        linear2.bias: zero
-    pooler:
-      type: NoAffinePooler
-      input_size: [max_len, batch_size, 512]
-    latent2mu:
-      type: Tunnel
-      input_size: [batch_size, 1536]
-      layers:
-        - { type: linear, size: 512, init: { bias: zero } }
-    latent2var:
-      type: Tunnel
-      input_size: [batch_size, 1536]
-      layers:
-        - { type: linear, size: 512, init: { bias: zero } }
-        - { type: function, function: { type: softplus } }
-    vae: { type: VAE }
-    latent2dec:
-      type: Tunnel
-      input_size: [batch_size, 512]
-      layers:
-        - { type: affine, weight: 10.0, bias: 0.0 }
-        - { type: linear, size: 512, init: { bias: zero } }
-    dec_embedding:
-      type: PositionalEmbedding
-      embedding: { num_embeddings: 129, embedding_dim: 512, padding_idx: 0 }
-      dropout: 0.0
-      max_len: 250
-    decoder:
-      type: AttentionDecoder
-      max_len: 250
-      layer:
-        d_model: 512
-        nhead: 8
-        dropout: 0.0
-        layer_norm_eps: 1.0e-09
-        activation: newgelu
-        d_ff_factor: 4
-      num_layers: 8
-      init:
-        self_attn.in_proj_weight: glorot_uniform
-        self_attn.in_proj_bias: zero
-        self_attn.out_proj.weight: glorot_uniform
-        self_attn.out_proj.bias: zero
-        linear1.weight: { type: normal, mean: 0.0, std: 0.02 }
-        linear1.bias: zero
-        linear2.weight: { type: normal, mean: 0.0, std: 0.02 }
-        linear2.bias: zero
-    dec2proba:
-      type: Tunnel
-      input_size: [batch_size, length, 512]
-      layers:
-        - { type: layernorm, args: { elementwise_affine: false } }
-        - { type: linear, size: 129, init: { bias: zero } }
-    dec_supporter:
-      type: GreedyDecoder
-      start_token: 1
-      end_token: 2 
-    sequencece:
-      type: CrossEntropyLoss
-      reduction: sum
-      ignore_index: 0
-    -d_kl:         { type: MinusD_KLLoss }
-    -d_kl_factor:  { type: Affine, weight: 0.001 }
+  val_loop:
+    - { module: teacherforcer,  input: target, output: [dec_input, dec_target, dec_target_len], return_len: true }
+    - { module: masker,         input: input,  output: input_padding_mask }
+    - { module: enc_embedding,  input: input }
+    - { module: encoder,        input: [input, input_padding_mask],               output: memory }
+    - { type: function, function: { type: transpose, dim0: 0, ...1: 1 }, input: input_padding_mask, output: input_padding_mask2 }
+    - { module: pooler,         input: [memory, input_padding_mask2],             output: latent_base }
+    - { module: latent2mu,      input: latent_base,                               output: mu }
+    - { module: latent2var,     input: latent_base,                               output: var }
+    - { module: vae,            input: { mu: mu, var: var },                      output: latent }
+    - { module: latent2dec,     input: latent,                                    output: dec_latent }
+    - { module: dec_embedding,  input: dec_input }
+    - { module: decoder,        input: { latent: dec_latent, tgt: dec_input },    output: dec_output, mode: forced }
+    - { module: dec2proba,      input: dec_output }
+    - { module: sequencece,     input: [dec_output, dec_target],                  output: sequencece }
+    - { module: -d_kl,          input: [mu, var],                                 output: -d_kl }
+    - { module: dec_supporter,  mode: force,                                      input: dec_output,   output: forced }
+    - { module: decoder,        mode: prepare_cell_forward,                       input: { latent: dec_latent }, output: state }
+    - { module: dec_supporter,  mode: init,                                       input: { batch_size: batch_size }, output: [cur_input, greedy] }
+    - type: iterate
+      length: dec_target_len
+      processes:
+        - { module: dec_embedding, input: { input: cur_input, position: iterate_i },                            output: cur_input }
+        - { module: decoder,       mode: cell_forward, input: { tgt: cur_input, state: state, position: iterate_i }, output: [cur_output, state] }
+        - { module: dec2proba,     input: cur_output }
+        - { module: dec_supporter, mode: add,         input: { cur_proba: cur_output, outs: greedy },           output: [cur_input, greedy] }
+    - { module: dec_supporter, input: greedy, output: greedy, mode: aggregate }
 
-# ---- Training（学習長は短く・process にループを渡す）----
-training:
-  epochs: 1
-  steps_per_epoch: 50
-  grad_accum: 1
-  save_every: 1
+  # -------------------------
+  # Metrics / Accumulators
+  # -------------------------
+  metrics:
+    "Perfect accuracy":
+      type: perfect_accuracy      # FIXME: あなたの notate.training.get_metric に合わせる
+    "Partial accuracy (greedy decode)":
+      type: partial_accuracy_greedy
+    "Partial accuracy (teacher forcing)":
+      type: partial_accuracy_tf
 
-  process:
-    type: forward
-    # ★ get_process 側で参照できるよう、そのまま渡す
-    train_loop:
-      - { module: teacherforcer, input: target, output: [dec_input, dec_target] }
-      - { module: masker,       input: input,  output: input_padding_mask }
-      - { module: enc_embedding, input: input, output: input_emb }
-      - { module: encoder, input: [input_emb, input_padding_mask], output: memory }
-      - { type: function, function: { type: transpose, dim0: 0, dim1: 1 }, input: input_padding_mask, output: input_padding_mask2 }
-      - { module: pooler, input: [memory, input_padding_mask2], output: latent_base }
-      - { module: latent2mu, input: latent_base, output: mu }
-      - { module: latent2var, input: latent_base, output: var }
-      - { module: vae, input: { mu: mu, var: var }, output: latent }
-      - { module: latent2dec, input: latent, output: dec_latent }
-      - { module: dec_embedding, input: dec_input }
-      - { module: decoder, input: { latent: dec_latent, tgt: dec_input }, output: dec_output, mode: forced }
-      - { module: dec2proba, input: dec_output }
-      - { module: sequencece, input: [dec_output, dec_target], output: sequencece }
-      - { module: -d_kl, input: [mu, var], output: -d_kl }
-      - { module: -d_kl_factor, input: -d_kl }
-    loss_names: [sequencece, -d_kl]
+  accumulators:
+    - { type: NumpyAccumulator, input: 'idx', org_type: 'numpy' }  # 例
 
-    val_loop:
-      - { module: teacherforcer, input: target, output: [dec_input, dec_target, dec_target_len], return_len: true }
-      - { module: masker, input: input, output: input_padding_mask }
-      - { module: enc_embedding, input: input }
-      - { module: encoder, input: [input, input_padding_mask], output: memory }
-      - { type: function, function: { type: transpose, dim0: 0, dim1: 1 }, input: input_padding_mask, output: input_padding_mask2 }
-      - { module: pooler, input: [memory, input_padding_mask2], output: latent_base }
-      - { module: latent2mu, input: latent_base, output: mu }
-      - { module: latent2var, input: latent_base, output: var }
-      - { module: vae, input: { mu: mu, var: var }, output: latent }
-      - { module: latent2dec, input: latent, output: dec_latent }
-      - { module: dec_embedding, input: dec_input }
-      - { module: decoder, input: { latent: dec_latent, tgt: dec_input }, output: dec_output, mode: forced }
-      - { module: dec2proba, input: dec_output }
-      - { module: sequencece, input: [dec_output, dec_target], output: sequencece }
-      - { module: -d_kl, input: [mu, var], output: -d_kl }
-      - { module: dec_supporter, mode: force, input: dec_output, output: forced }
-      - { module: decoder, mode: prepare_cell_forward, input: { latent: dec_latent }, output: state }
-      - { module: dec_supporter, mode: init, input: { batch_size: batch_size }, output: [cur_input, greedy] }
-      - type: iterate
-        length: dec_target_len
-        processes:
-          - { module: dec_embedding, input: { input: cur_input, position: iterate_i }, output: cur_input }
-          - { module: decoder, mode: cell_forward, input: { tgt: cur_input, latent: dec_latent, state: state, position: iterate_i }, output: [cur_output, state] }
-          - { module: dec2proba, input: cur_output }
-          - { module: dec_supporter, mode: add, input: { cur_proba: cur_output, outs: greedy }, output: [cur_input, greedy] }
-      - { module: dec_supporter, input: greedy, output: greedy, mode: aggregate }
+  stocks:
+    score_df: ""   # 既存の val_score.csv を読む場合のみパス
+
+  # -------------------------
+  # Hook群（必要に応じて）
+  # -------------------------
+  pre_hooks:
+    notice_alarm:
+      type: notice_alarm
+      studyname: "${study}"
+      alarm: { type: count, target: step, step: 2500, start: 2500 }
+      end: true
+    save_alarm:
+      type: save_alarm
+      alarm: { type: list, target: step, list: [0, 1000, 2000, 3000, 4000, 5000] }
+      end: true
+    time_abort:
+      type: time_abort
+      threshold: 7200
+    step_abort:
+      type: step_abort
+      threshold: 50000
+    scheduler_alarm:
+      type: scheduler_alarm
+      scheduler:
+        type: warmup
+        warmup: 800
+  post_hooks:
+    validation_alarm:
+      type: validation_alarm
+    checkpoint_alarm:
+      type: checkpoint_alarm
+
+  # 旧式の中断パラメータ（Hook化が推奨されるが下位互換で残す）
+  abortion:
+    step:
+    epoch:
+    time:
+
+  # ロス正則化・勾配
+  regularize_loss:
+    normalize: false
+    clip_grad_norm:
+    clip_grad_value:
+
+  # 乱数状態の保存/復元（使う場合のみ）
+  rstate:
+    random:
+    numpy:
+    torch:
+    cuda:
+
+# -------------------------
+# process（入口1本化：ForwardProcess用）
+# -------------------------
+process:
+  type: forward
+  module: pipeline     # ← 上で定義した PipelineModule を入口に
+  input: batch         # ← バッチ辞書をそのまま渡す（ForwardProcess 実装に合わせて dict/kwargs 両対応）
