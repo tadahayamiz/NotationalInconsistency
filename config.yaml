@@ -1,4 +1,4 @@
-# ==== config.yaml (lowercased module types; small-data training) ====
+# ==== config.yaml（type名を CamelCase に統一；小データ実学習） ====
 
 variables:
   $studyname: AllPubchem_test
@@ -22,97 +22,72 @@ result_dir:
 
 model:
   modules:
-    teacherforcer: { type: teacherforcer, length_dim: 1 }
-    masker:        { type: maskmaker, mask_token: 0, dtype: bool, direction: equal }
+    teacherforcer: { type: TeacherForcer, length_dim: 1 }
+    masker:        { type: MaskMaker, mask_token: 0, dtype: bool, direction: equal }
     enc_embedding:
-      type: positionalembedding
+      type: PositionalEmbedding
       embedding: { num_embeddings: 1123, embedding_dim: 512, padding_idx: 0 }
       dropout: 0.0
       max_len: 250
     encoder:
-      type: transformerencoder
+      type: TransformerEncoder
       layer:
         d_model: 512
         nhead: 8
         d_ff_factor: 4
-        dropout: 0.0
-        activation: newgelu
-        layer_norm_eps: 1.0e-09
       n_layer: 8
-      init:
-        self_attn.in_proj_weight: glorot_uniform
-        self_attn.in_proj_bias: zero
-        self_attn.out_proj.weight: glorot_uniform
-        self_attn.out_proj.bias: zero
-        linear1.weight: { type: normal, mean: 0.0, std: 0.02 }
-        linear1.bias: zero
-        linear2.weight: { type: normal, mean: 0.0, std: 0.02 }
-        linear2.bias: zero
     pooler:
-      type: noaffinepooler
+      type: NoAffinePooler
       input_size: [max_len, batch_size, 512]
     latent2mu:
-      type: tunnel
+      type: Tunnel
       input_size: [batch_size, 1536]
       layers:
         - { type: linear, size: 512, init: { bias: zero } }
     latent2var:
-      type: tunnel
+      type: Tunnel
       input_size: [batch_size, 1536]
       layers:
         - { type: linear, size: 512, init: { bias: zero } }
         - { type: function, function: { type: softplus } }
-    vae: { type: vae }
+    vae: { type: VAE }
     latent2dec:
-      type: tunnel
+      type: Tunnel
       input_size: [batch_size, 512]
       layers:
         - { type: affine, weight: 10.0, bias: 0.0 }
         - { type: linear, size: 512, init: { bias: zero } }
     dec_embedding:
-      type: positionalembedding
+      type: PositionalEmbedding
       embedding: { num_embeddings: 129, embedding_dim: 512, padding_idx: 0 }
       dropout: 0.0
       max_len: 250
     decoder:
-      type: attentiondecoder
+      type: AttentionDecoder
       max_len: 250
       layer:
         d_model: 512
         nhead: 8
-        dropout: 0.0
-        layer_norm_eps: 1.0e-09
-        activation: newgelu
-        d_ff_factor: 4
       num_layers: 8
-      init:
-        self_attn.in_proj_weight: glorot_uniform
-        self_attn.in_proj_bias: zero
-        self_attn.out_proj.weight: glorot_uniform
-        self_attn.out_proj.bias: zero
-        linear1.weight: { type: normal, mean: 0.0, std: 0.02 }
-        linear1.bias: zero
-        linear2.weight: { type: normal, mean: 0.0, std: 0.02 }
-        linear2.bias: zero
     dec2proba:
-      type: tunnel
+      type: Tunnel
       input_size: [batch_size, length, 512]
       layers:
         - { type: layernorm, args: { elementwise_affine: false } }
         - { type: linear, size: 129, init: { bias: zero } }
     dec_supporter:
-      type: greedydecoder
+      type: GreedyDecoder
       start_token: 1
     sequencece:
-      type: crossentropyloss
+      type: CrossEntropyLoss
       reduction: sum
       ignore_index: 0
-    -d_kl:         { type: minusd_klloss }
-    -d_kl_factor:  { type: affine, weight: 0.001 }
+    -d_kl:         { type: MinusD_KLLoss }
+    -d_kl_factor:  { type: Affine, weight: 0.001 }
 
 optimizer:
-  type: "$optimizer"         # adamw
-  lr: $lr                    # 0.001
+  type: "$optimizer"     # adamw
+  lr: $lr                # 0.001
   weight_decay: 0.01
   betas: [0.9, 0.999]
   eps: 1.0e-8
@@ -159,12 +134,10 @@ data:
     datasets:
       input:
         type: pkl
-        path_list:
-          - "$DATA_DIR/AllPubchem_test_random.pkl"
+        path_list: ["$DATA_DIR/AllPubchem_test_random.pkl"]
       target:
         type: pkl
-        path_list:
-          - "$DATA_DIR/AllPubchem_test_canonical.pkl"
+        path_list: ["$DATA_DIR/AllPubchem_test_canonical.pkl"]
 
   vals:
     - type: normal
@@ -173,12 +146,10 @@ data:
       datasets:
         input:
           type: pkl
-          path_list:
-            - "$DATA_DIR/AllPubchem_test_random.pkl"
+          path_list: ["$DATA_DIR/AllPubchem_test_random.pkl"]
         target:
           type: pkl
-          path_list:
-            - "$DATA_DIR/AllPubchem_test_canonical.pkl"
+          path_list: ["$DATA_DIR/AllPubchem_test_canonical.pkl"]
 
 training:
   epochs: 1
