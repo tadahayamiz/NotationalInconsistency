@@ -138,21 +138,38 @@ def main():
     mcfg_multi = cfg.get("metrics") or cfg.get("metric")  # 後方互換
     if isinstance(mcfg_multi, dict):
         metrics = {
-            name: get_metric(type=spec.get("type"), **{k: v for k, v in spec.items() if k != "type"})
+            name: get_metric(
+                type=spec.get("type"),
+                logger=logger,          # ★追加
+                name=name,              # ★追加
+                **{k: v for k, v in spec.items() if k != "type"}
+            )
             for name, spec in mcfg_multi.items()
         }
         logger.info(f"[metrics] {list(metrics.keys())}")
     elif isinstance(mcfg_multi, list):
         metrics = {
-            f"{i}:{(spec.get('type') if isinstance(spec, dict) else 'metric')}":
-            get_metric(type=(spec.get("type") if isinstance(spec, dict) else spec), **({k: v for k, v in spec.items() if k != "type"} if isinstance(spec, dict) else {}))
+            (name := f"{i}:{(spec.get('type') if isinstance(spec, dict) else 'metric')}"):
+            get_metric(
+                type=(spec.get("type") if isinstance(spec, dict) else spec),
+                logger=logger,          # ★追加
+                name=name,              # ★追加
+                **({k: v for k, v in spec.items() if k != "type"} if isinstance(spec, dict) else {})
+            )
             for i, spec in enumerate(mcfg_multi)
         }
         logger.info(f"[metrics] {list(metrics.keys())}")
     elif mcfg_multi:
         # 単数定義（後方互換）
         spec = mcfg_multi
-        metrics = {"metric": get_metric(type=spec.get("type"), **{k: v for k, v in spec.items() if k != "type"})}
+        metrics = {
+            "metric": get_metric(
+                type=spec.get("type"),
+                logger=logger,          # ★追加
+                name="metric",          # ★追加
+                **{k: v for k, v in spec.items() if k != "type"}
+            )
+        }
         logger.info(f"[metrics] single -> {list(metrics.keys())}")
 
     # --- hooks（pre/post）
