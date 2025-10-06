@@ -348,9 +348,21 @@ def main():
     # -------------------------
     # Build dataloaders
     # -------------------------
-    # NOTE: get_dataloader の署名は既存実装に従います。一般に data.<split> の dict を渡せばOKです。
-    train_loader = get_dataloader(cfg.data.train, logger=logger)
-    valid_loader = get_dataloader(cfg.data.valid, logger=logger) if "valid" in cfg.data else None
+    def _split_type_kwargs(d: ADict):
+        d = ADict(d)  # shallow copy-ish
+        if "type" not in d:
+            raise SystemExit("[CONFIG ERROR] data.<split>.type is required ('normal' or 'bucket')")
+        t = d.type
+        rest = {k: v for k, v in d.items() if k != "type"}
+        return t, rest
+
+    t_train, kw_train = _split_type_kwargs(cfg.data.train)
+    train_loader = get_dataloader(t_train, logger=logger, **kw_train)
+
+    valid_loader = None
+    if "valid" in cfg.data and cfg.data.valid:
+        t_valid, kw_valid = _split_type_kwargs(cfg.data.valid)
+        valid_loader = get_dataloader(t_valid, logger=logger, **kw_valid)
 
     # -------------------------
     # Build model

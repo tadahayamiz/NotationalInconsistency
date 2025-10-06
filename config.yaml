@@ -24,39 +24,58 @@ logging:
 # ------------------------------------------------------------
 data:
   train:
-    dataset:
-      type: "bucket_dset"     # ←登録済み名称に合わせてください
-      # 例: pkl/csv等のパス（相対パス）
-      path_list:
-        - "./data/train/train_bucket_000.pkl"
-        - "./data/train/train_bucket_001.pkl"
-      # 必要に応じて：ソース・ターゲット列名（CSVの場合）
-      src_col: "src"
-      tgt_col: "tgt"
-      # 語彙ファイル等が必要なら相対パスで明示
-      vocab_json: "./data/vocab.json"
-      # バケツ境界など
-      bins: [64, 128, 256]
-    loader:
-      batch_size: 64
-      shuffle: true
-      num_workers: 4
-      pin_memory: true
+    type: bucket          # ★ 必須: 'normal' or 'bucket'
+    seed: 1               # あれば
+    bucket_dset: input    # bucket時は基準データセット名
+    batch_size: [128, 96, 64, 48, 32, 16]
+    bins: [20, 40, 60, 80, 100, 120, 140, 160]
+    add_lower_margin: true
+    add_upper_margin: true
+
+    # ↓ DataLoader が期待する形（datasets: の中に datasets/dfs の2階層）
+    datasets:
+      dfs: {}             # CSVを読む場合だけ定義。pickleだけなら空でOK
+      datasets:
+        input:
+          type: string
+          padding_value: 0
+          path_list: "./data/train/AllPubchem_train_random.pkl"     # src 側
+          len_name: "src_len"
+          dtype: long
+          dim: 1
+        target:
+          type: string
+          padding_value: 0
+          path_list: "./data/train/AllPubchem_train_canonical.pkl"  # tgt 側
+          len_name: "tgt_len"
+          dtype: long
+          dim: 1
 
   valid:
-    dataset:
-      type: "bucket_dset"
-      path_list:
-        - "./data/valid/valid_bucket_000.pkl"
-      src_col: "src"
-      tgt_col: "tgt"
-      vocab_json: "./data/vocab.json"
-      bins: [64, 128, 256]
-    loader:
-      batch_size: 64
-      shuffle: false
-      num_workers: 2
-      pin_memory: true
+    type: bucket
+    seed: 1
+    bucket_dset: input
+    batch_size: [128, 96, 64, 48, 32, 16]
+    bins: [20, 40, 60, 80, 100, 120, 140, 160]
+    add_lower_margin: true
+    add_upper_margin: true
+    datasets:
+      dfs: {}
+      datasets:
+        input:
+          type: string
+          padding_value: 0
+          path_list: "./data/valid/AllPubchem_valid_random.pkl"
+          len_name: "src_len"
+          dtype: long
+          dim: 1
+        target:
+          type: string
+          padding_value: 0
+          path_list: "./data/valid/AllPubchem_valid_canonical.pkl"
+          len_name: "tgt_len"
+          dtype: long
+          dim: 1
 
 # ------------------------------------------------------------
 # モデル定義（登録済みのモジュール名に合わせてください）
