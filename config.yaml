@@ -1,11 +1,10 @@
-# ==== config.yaml (small-data, ready-to-train; for scripts/train.py) ====
+# ==== config.yaml (lowercased module types; small-data training) ====
 
-# 変数（$... は subs_vars で展開）
 variables:
   $studyname: AllPubchem_test
   $seed: 111
   $lr: 0.001
-  $optimizer: adamw         # デフォルト最適化手法
+  $optimizer: adamw
   $pad_token: 0
   $start_token: 1
   $end_token: 2
@@ -13,28 +12,25 @@ variables:
   $PROJECT_DIR: .
   $DATA_DIR: data
 
-# ログ（train.py は小文字で渡すのでこのままでOK）
 logging:
   stream_level: info
   file_level: debug
 
-# 出力ディレクトリ（train.py の仕様に合わせて top-level に）
 result_dir:
   dirname: "./result/$TIMESTAMP_$studyname"
-  duplicate: "merge"        # 既存があっても追記/統合
+  duplicate: "merge"
 
-# モデル定義（あなたの元設定の modules をそのまま移植）
 model:
   modules:
-    teacherforcer: { type: TeacherForcer, length_dim: 1 }
-    masker:        { type: MaskMaker, mask_token: 0, dtype: bool, direction: equal }
+    teacherforcer: { type: teacherforcer, length_dim: 1 }
+    masker:        { type: maskmaker, mask_token: 0, dtype: bool, direction: equal }
     enc_embedding:
-      type: PositionalEmbedding
+      type: positionalembedding
       embedding: { num_embeddings: 1123, embedding_dim: 512, padding_idx: 0 }
       dropout: 0.0
       max_len: 250
     encoder:
-      type: TransformerEncoder
+      type: transformerencoder
       layer:
         d_model: 512
         nhead: 8
@@ -53,33 +49,33 @@ model:
         linear2.weight: { type: normal, mean: 0.0, std: 0.02 }
         linear2.bias: zero
     pooler:
-      type: NoAffinePooler
+      type: noaffinepooler
       input_size: [max_len, batch_size, 512]
     latent2mu:
-      type: Tunnel
+      type: tunnel
       input_size: [batch_size, 1536]
       layers:
         - { type: linear, size: 512, init: { bias: zero } }
     latent2var:
-      type: Tunnel
+      type: tunnel
       input_size: [batch_size, 1536]
       layers:
         - { type: linear, size: 512, init: { bias: zero } }
         - { type: function, function: { type: softplus } }
-    vae: { type: VAE }
+    vae: { type: vae }
     latent2dec:
-      type: Tunnel
+      type: tunnel
       input_size: [batch_size, 512]
       layers:
         - { type: affine, weight: 10.0, bias: 0.0 }
         - { type: linear, size: 512, init: { bias: zero } }
     dec_embedding:
-      type: PositionalEmbedding
+      type: positionalembedding
       embedding: { num_embeddings: 129, embedding_dim: 512, padding_idx: 0 }
       dropout: 0.0
       max_len: 250
     decoder:
-      type: AttentionDecoder
+      type: attentiondecoder
       max_len: 250
       layer:
         d_model: 512
@@ -99,36 +95,32 @@ model:
         linear2.weight: { type: normal, mean: 0.0, std: 0.02 }
         linear2.bias: zero
     dec2proba:
-      type: Tunnel
+      type: tunnel
       input_size: [batch_size, length, 512]
       layers:
         - { type: layernorm, args: { elementwise_affine: false } }
         - { type: linear, size: 129, init: { bias: zero } }
     dec_supporter:
-      type: GreedyDecoder
+      type: greedydecoder
       start_token: 1
     sequencece:
-      type: CrossEntropyLoss
+      type: crossentropyloss
       reduction: sum
       ignore_index: 0
-    -d_kl:         { type: MinusD_KLLoss }
-    -d_kl_factor:  { type: Affine, weight: 0.001 }
+    -d_kl:         { type: minusd_klloss }
+    -d_kl_factor:  { type: affine, weight: 0.001 }
 
-# Optimizer / Scheduler（デフォルト入り）
 optimizer:
-  type: "$optimizer"   # ← variables から 'adamw'
-  lr: $lr              # ← 0.001
-  weight_decay: 0.01   # AdamW なので適度な正則化を付与
+  type: "$optimizer"         # adamw
+  lr: $lr                    # 0.001
+  weight_decay: 0.01
   betas: [0.9, 0.999]
   eps: 1.0e-8
 
-# get_scheduler は 'linear' / 'multistep' / 'exponential' に加えて
-# 'warmup' も LambdaLR でサポートされる実装です
 scheduler:
   type: warmup
-  warmup: 200          # 200 step ウォームアップ（小規模スモーク用）
+  warmup: 200
 
-# metrics（オリジナルを踏襲）
 metrics:
   Perfect accuracy:
     type: perfect
@@ -146,7 +138,6 @@ metrics:
     target: dec_target
     pad_token: $pad_token
 
-# Hooks（hook_type2class に存在するもののみ）
 pre_hooks:
   notice:
     type: notice_alarm
@@ -158,9 +149,8 @@ pre_hooks:
     threshold: 20000
   time_abort:
     type: time_abort
-    threshold: 7200   # 秒（= 2時間）
+    threshold: 7200
 
-# データ（NormalDataLoader 前提の最小構成）
 data:
   train:
     type: normal
@@ -190,30 +180,10 @@ data:
           path_list:
             - "$DATA_DIR/AllPubchem_test_canonical.pkl"
 
-# トレーニング基本パラメータ
 training:
   epochs: 1
-  steps_per_epoch: 50    # 小規模検証なので短め
+  steps_per_epoch: 50
   grad_accum: 1
   save_every: 1
   process:
-    type: forward        # get_process('forward') を呼ぶ
-
-# 参考：BucketDataLoader を使いたい場合（ファイルが揃っているなら）
-# data:
-#   train:
-#     type: bucket
-#     seed: $seed
-#     bucket_dset: input
-#     batch_size: [64,64,64,64,48,48,32,32,24,24,16,16,8,8,8,8]
-#     bins: [20,30,40,50,60,70,80,90,100,120,140,160,180,200,220]
-#     datasets:
-#       datasets:
-#         input:
-#           type: string
-#           padding_value: 0
-#           path_list: "$DATA_DIR/Pubchem_chunk_pro_0_ran.pkl"
-#         target:
-#           type: string
-#           padding_value: 0
-#           path_list: "$DATA_DIR/Pubchem_chunk_pro_0_can.pkl"
+    type: forward
