@@ -316,10 +316,46 @@ def main():
     duplicate = cfg.result_dir.get("duplicate", "error")
     result_dir = make_result_dir(dirname=rd, duplicate=duplicate)
 
-    # Logger
-    logger = default_logger(result_dir=result_dir,
-                            stream_level=str(cfg.get("logging", {}).get("stream_level", "info")),
-                            file_level=str(cfg.get("logging", {}).get("file_level", "debug")))
+    import logging, os
+
+    def _make_logger(result_dir: str, stream_level: str = "info", file_level: str = "debug"):
+        from notate.tools.logger import default_logger as _dl
+        sl = str(stream_level).lower()
+        fl = str(file_level).lower()
+        # 1) 位置引数（最初の引数がディレクトリ想定）
+        try:
+            return _dl(result_dir, stream_level=sl, file_level=fl)
+        except TypeError:
+            pass
+        # 2) よくあるキーワード違いに対応
+        for kw in ("log_dir", "dirpath", "dirname", "save_dir", "path"):
+            try:
+                return _dl(**{kw: result_dir}, stream_level=sl, file_level=fl)
+            except TypeError:
+                continue
+        # 3) 標準loggingで自前セットアップ（最終フォールバック）
+        os.makedirs(result_dir, exist_ok=True)
+        logger = logging.getLogger("notate")
+        logger.handlers.clear()
+        logger.setLevel(logging.DEBUG)
+
+        sh = logging.StreamHandler()
+        sh.setLevel(getattr(logging, sl.upper(), logging.INFO))
+        sh.setFormatter(logging.Formatter("[%(levelname)s] %(message)s"))
+        logger.addHandler(sh)
+
+        fh = logging.FileHandler(os.path.join(result_dir, "train.log"), encoding="utf-8")
+        fh.setLevel(getattr(logging, fl.upper(), logging.DEBUG))
+        fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+        logger.addHandler(fh)
+        logger.info("[logger] fallback: stdlib logging (train.log in %s)", result_dir)
+        return logger
+
+    logger = _make_logger(
+        result_dir=result_dir,
+        stream_level=str(cfg.get("logging", {}).get("stream_level", "info")),
+        file_level=str(cfg.get("logging", {}).get("file_level", "debug")),
+    )
     logger.info("[result_dir] %s", result_dir)
 
     # Device
