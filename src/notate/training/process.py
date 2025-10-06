@@ -2,8 +2,50 @@
 import torch
 import numpy as np
 
-from ..core.core import function_config2func, PRINT_PROCESS
-# FunctionProcessとIterateProcessにて呼ばれているのでcoreが必要
+# Strict: define process-op resolver locally to avoid coupling to core.
+import importlib
+PRINT_PROCESS = False
+PROCESS_OPS_MODULE = "notate.training.process_ops"  # 既存のops実装モジュール名に合わせてください
+ALLOWED_PROCESS_OPS = {
+    "forward", "loss", "backward", "step", "metrics", "accumulate",
+    "zero_grad", "clip_grad"
+}
+
+_OPS_MOD = None
+try:
+    _OPS_MOD = importlib.import_module(PROCESS_OPS_MODULE)
+except Exception:
+    _OPS_MOD = None
+
+def function_config2func(cfg, logger=None):
+    # cfg: "opname" or {"op": "...", ...} or {"type": "...", ...}
+    if isinstance(cfg, str):
+        name = cfg.strip()
+        kwargs = {}
+    elif isinstance(cfg, dict):
+        name = str(cfg.get("op") or cfg.get("type") or "").strip()
+        kwargs = {k: v for k, v in cfg.items() if k not in ("op", "type")}
+    else:
+        raise SystemExit("[CONFIG ERROR] process op spec must be a string or mapping")
+    if not name:
+        raise SystemExit("[CONFIG ERROR] process op name is required")
+    if name not in ALLOWED_PROCESS_OPS:
+        raise SystemExit(f"[CONFIG ERROR] Unknown process op '{name}'. Allowed: {sorted(ALLOWED_PROCESS_OPS)}")
+    if _OPS_MOD is None:
+        raise SystemExit(
+            f"[CONFIG ERROR] Process ops module '{PROCESS_OPS_MODULE}' could not be imported. "
+            "Define your ops there or set PROCESS_OPS_MODULE correctly."
+        )
+    try:
+        fn = getattr(_OPS_MOD, name)
+    except AttributeError:
+        raise SystemExit(
+            f"[CONFIG ERROR] Process op '{name}' is not defined in '{PROCESS_OPS_MODULE}'."
+        )
+    if logger:
+        logger.debug("[process-op] %s(%s)", name, ", ".join(f"{k}={v!r}" for k, v in kwargs.items()))
+    return fn, kwargs
+
 
 class Process:
     def __init__(self):
