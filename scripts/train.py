@@ -13,10 +13,9 @@ from notate.tools.logger import default_logger
 from notate.tools.args import subs_vars
 from notate.tools.tools import nullcontext
 
-from notate.data import get_dataloader, get_accumulator, NumpyAccumulator  # noqa: F401 (accumulators not used in this minimal loop)
+from notate.data import get_dataloader, get_accumulator
 from notate.training import (
-    get_metric, get_optimizer, get_scheduler, get_process,
-    hook_type2class, get_hook, AlarmHook  # noqa: F401 (hook_type2class/AlarmHook kept for compatibility)
+    get_metric, get_optimizer, get_scheduler, get_process, get_hook
 )
 from notate.core import Model
 

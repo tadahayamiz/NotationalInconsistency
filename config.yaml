@@ -1,10 +1,5 @@
 # ============================================
-# config.yaml  (Plan-A ready / single-entry process)
-# --------------------------------------------
-# ・processブロックは残す（ForwardProcess を使用）
-# ・入口moduleは "pipeline"（新規 PipelineModule）に一本化
-# ・training.train_loop / val_loop / loss_names は従来どおり保持
-# ・scripts/train.py系/あなたのtrain.py系の双方で読める形
+# config.yaml - Model Configuration
 # ============================================
 
 variables:

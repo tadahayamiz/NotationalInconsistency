@@ -366,7 +366,12 @@ class TransformerDecoder(nn.Module):
         self.register_buffer('square_subsequent_mask', square_mask)
         d_model = layer['d_model']
         if 'activation' in layer:
-            layer['activation'] = function_config2func(layer['activation'])
+            # Handle activation: if string, use static mapping; if dict, use function_config2func
+            activation = layer['activation']
+            if isinstance(activation, str):
+                layer['activation'] = ACTIVATION_FUNCTIONS.get(activation, F.relu)
+            else:
+                layer['activation'] = function_config2func(activation)
         if 'd_ff_factor' in layer:
             layer['dim_feedforward'] = d_model*layer.pop('d_ff_factor')
         layer.setdefault('norm_first', True)

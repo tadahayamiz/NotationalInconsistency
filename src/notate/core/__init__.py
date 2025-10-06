@@ -11,7 +11,7 @@ __all__ = [
     'function_config2func', 'init_config2func',
     
     # Registries
-    'module_type2class', 'function_name2func',
+    'module_type2class',
     
     # Utilities
     'PRINT_PROCESS',
