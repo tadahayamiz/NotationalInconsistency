@@ -1,345 +1,227 @@
-"""
-Core model components and utilities.
+# src/notate/core/core.py
+# Strict mode: no lazy (dynamic) resolution, no silent fallbacks.
+# - Unknown module "type" -> hard error
+# - Unknown kwargs for a module -> hard error
+# - Keeps a simple, explicit registry that other files can populate via `register_module`
+# - Model builds submodules from config["modules"] (dict) and optional config["use_modules"] (list)
+# - No variable expansion here (handled at scripts/train.py)
 
-- Weight/init/function registries for config-driven setup
-- Auto-registration & lazy resolution of torch.nn.Module classes
-- Simple custom module: Affine
-- Model: module factory and (de)serialization helpers
-"""
-import os
-import math
+from __future__ import annotations
+from typing import Dict, Type, Any, Optional
 import logging
-from collections import OrderedDict
-from functools import partial
-from inspect import signature
-
-import importlib
 import inspect
-import re
-
-import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
+# -----------------------------------------------------------------------------
+# Registry
+# -----------------------------------------------------------------------------
 
-# ---------------------------------------------------------------------
-# Debug option
-# ---------------------------------------------------------------------
-PRINT_PROCESS = False
+module_type2class: Dict[str, Type[nn.Module]] = {}
 
-
-# ---------------------------------------------------------------------
-# Activations / functions
-# ---------------------------------------------------------------------
-def NewGELU(x: torch.Tensor) -> torch.Tensor:
-    """New GELU activation."""
-    return 0.5 * x * (1.0 + torch.tanh(math.sqrt(2.0 / math.pi) * (x + 0.044715 * x.pow(3))))
-
-function_name2func = {
-    # activations
-    "relu": F.relu,
-    "gelu": F.gelu,
-    "sigmoid": torch.sigmoid,
-    "tanh": torch.tanh,
-    "newgelu": NewGELU,
-    "softplus": F.softplus,
-    "log_softmax": F.log_softmax,
-    "none": lambda x: x,
-    # utilities
-    "exp": torch.exp,
-    "log": torch.log,
-    "sum": torch.sum,
-    "mean": torch.mean,
-    "transpose": torch.transpose,
-    "argmax": torch.argmax,
-}
-
-def function_config2func(config):
-    """Return callable from (str|dict). If dict, expects {'type': name, ...kwargs}."""
-    if isinstance(config, str):
-        return function_name2func[config]
-    cfg = dict(config)
-    ftype = cfg.pop("type")
-    return partial(function_name2func[ftype], **cfg)
-
-
-# ---------------------------------------------------------------------
-# Initializers
-# ---------------------------------------------------------------------
-init_type2func = {
-    "glorot_uniform": nn.init.xavier_uniform_,
-    "glorot_normal": nn.init.xavier_normal_,
-    "he_uniform": nn.init.kaiming_uniform_,
-    "he_normal": nn.init.kaiming_normal_,
-    "zero": nn.init.zeros_,
-    "zeros": nn.init.zeros_,
-    "one": nn.init.ones_,
-    "ones": nn.init.ones_,
-    "normal": nn.init.normal_,
-    "none": lambda _: None,
-}
-
-def init_config2func(type="none", factor=None, **kwargs):
+def register_module(type_name: str, cls: Type[nn.Module]) -> None:
     """
-    Make an initializer from (str|number|dict).
-    If factor is set, multiply parameters by factor after init.
+    Explicitly register a module class under a string key.
+    Re-registering with a different class raises, identical is a no-op.
     """
-    if factor is not None:
-        def init_fn(param: nn.Parameter):
-            init_config2func(type, **kwargs)(param)
-            param.data = param.data * factor
-        return init_fn
-
-    if isinstance(type, dict):
-        return init_config2func(**type)
-
-    if isinstance(type, (int, float)):
-        return lambda p: nn.init.constant_(p, float(type))
-    if type in init_type2func:
-        return lambda p: init_type2func[type](p, **kwargs)
-    raise ValueError(f"Unsupported init type: {type}")
+    if not isinstance(type_name, str) or not type_name:
+        raise ValueError("[CONFIG ERROR] register_module: type_name must be a non-empty string")
+    if not issubclass(cls, nn.Module):
+        raise TypeError("[CONFIG ERROR] register_module: cls must be a subclass of torch.nn.Module")
+    prev = module_type2class.get(type_name)
+    if prev is not None and prev is not cls:
+        raise ValueError(f"[CONFIG ERROR] Module type '{type_name}' already registered with {prev.__name__}, "
+                         f"got conflicting class {cls.__name__}")
+    module_type2class[type_name] = cls
 
 
-# ---------------------------------------------------------------------
-# Module registry (legacy + auto + lazy)
-# ---------------------------------------------------------------------
-module_type2class: dict[str, type[nn.Module]] = {}
-
-class Affine(nn.Module):
-    """output = input * weight + bias"""
-    def __init__(self, weight=1.0, bias=0.0):
-        super().__init__()
-        self.weight = weight
-        self.bias = bias
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return x * self.weight + self.bias
-
-# legacy registration
-module_type2class["Affine"] = Affine
-
-# -------- auto registration helpers --------
-_CANDIDATE_MODULES = [
-    "notate.modules.poolers",
-    "notate.modules.tunnel",
-    "notate.modules.vae",
-    "notate.modules.sequence",
-    # downstream depends on optuna; skip here
-]
-
-def _to_snake(name: str) -> str:
-    return re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()
-
-def _collect_module_classes():
+def resolve_module_class(type_name: str) -> Type[nn.Module]:
     """
-    Collect torch.nn.Module subclasses from candidate modules and
-    register both 'CamelCase' and 'snake_case' keys.
+    Strict resolver: only uses the explicit registry.
+    No dynamic import, no guessing.
     """
-    reg = {}
-    for modname in _CANDIDATE_MODULES:
-        try:
-            m = importlib.import_module(modname)
-        except Exception:
-            continue
-        for cls_name, cls in inspect.getmembers(m, inspect.isclass):
-            try:
-                if issubclass(cls, nn.Module):
-                    reg[cls_name] = cls
-                    reg[_to_snake(cls_name)] = cls
-            except Exception:
-                pass
-    return reg
-
-# merge auto-registrations (best-effort)
-module_type2class.update(_collect_module_classes())
-
-# -------- lazy resolution (when not yet registered) --------
-def _lazy_resolve_and_register(type_name: str):
-    """
-    If a module type is not registered, try to locate it dynamically
-    in candidate modules and register it (CamelCase & snake_case).
-    """
-    # 1) direct getattr by CamelCase
-    for modname in _CANDIDATE_MODULES:
-        try:
-            m = importlib.import_module(modname)
-            cls = getattr(m, type_name, None)
-            if inspect.isclass(cls) and issubclass(cls, nn.Module):
-                module_type2class[type_name] = cls
-                module_type2class[_to_snake(type_name)] = cls
-                return cls
-        except Exception:
-            pass
-    # 2) snake_case try
-    snake = _to_snake(type_name)
-    for modname in _CANDIDATE_MODULES:
-        try:
-            m = importlib.import_module(modname)
-            cls = getattr(m, snake, None)
-            if inspect.isclass(cls) and issubclass(cls, nn.Module):
-                module_type2class[type_name] = cls
-                module_type2class[snake] = cls
-                return cls
-        except Exception:
-            pass
-    # 3) exhaustive scan by class name equality
-    for modname in _CANDIDATE_MODULES:
-        try:
-            m = importlib.import_module(modname)
-            for cname, cls in inspect.getmembers(m, inspect.isclass):
-                if cname == type_name and issubclass(cls, nn.Module):
-                    module_type2class[type_name] = cls
-                    module_type2class[_to_snake(cname)] = cls
-                    return cls
-        except Exception:
-            pass
-    return None
-
-# info log (optional)
-logging.getLogger(__name__).info(
-    "[core] module_type2class registered: %d modules", len(module_type2class)
-)
-
-
-# ---------------------------------------------------------------------
-# Factory
-# ---------------------------------------------------------------------
-def get_module(logger: logging.Logger, type: str, **kwargs) -> nn.Module:
-    """
-    Create module instance from type and configuration.
-    Unknown kwargs are warned and ignored.
-    """
-    cls = module_type2class.get(type)
-    if cls is None:
-        cls = _lazy_resolve_and_register(type)
+    cls = module_type2class.get(type_name)
     if cls is None:
         sample = list(module_type2class.keys())[:20]
         raise KeyError(
-            f"Module type '{type}' not found (registered={len(module_type2class)}; sample={sample})"
+            f"[CONFIG ERROR] Unknown module.type '{type_name}'. "
+            f"Registered={len(module_type2class)}; sample={sample}"
+        )
+    return cls
+
+
+def _filter_kwargs_strict(cls: Type[nn.Module], kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Validate kwargs against __init__ signature of the class.
+    - Any key not present in the signature -> hard error
+    - We do not auto-fill defaults or coerce types here; ctor will enforce requireds.
+    """
+    sig = inspect.signature(cls.__init__)
+    valid_names = {p.name for p in sig.parameters.values()
+                   if p.kind in (p.POSITIONAL_OR_KEYWORD, p.KEYWORD_ONLY) and p.name != "self"}
+    unknown = set(kwargs.keys()) - valid_names
+    if unknown:
+        raise TypeError(f"[CONFIG ERROR] Unknown kwargs for {cls.__name__}: {sorted(unknown)}")
+    return kwargs
+
+
+def get_module(logger: Optional[logging.Logger], type: str, **kwargs) -> nn.Module:
+    """
+    Create a module from a registered type and kwargs. Strict:
+    - No lazy resolution
+    - Unknown kwargs -> error (not warning)
+    """
+    cls = resolve_module_class(type)
+    use_kwargs = _filter_kwargs_strict(cls, dict(kwargs))
+    if logger:
+        logger.debug("Instantiate %s(%s)", cls.__name__, ", ".join(f"{k}={v!r}" for k, v in use_kwargs.items()))
+    return cls(**use_kwargs)
+
+
+def build_module_from_config(name: str, mcfg: Dict[str, Any], logger: Optional[logging.Logger] = None) -> nn.Module:
+    """
+    Build a module from a config mapping:
+      { "type": "<RegisteredType>", ...other kwargs... }
+    """
+    if not isinstance(mcfg, dict):
+        raise TypeError(f"[CONFIG ERROR] model.modules.{name} must be a mapping")
+    if "type" not in mcfg:
+        raise KeyError(f"[CONFIG ERROR] model.modules.{name}.type is required")
+
+    mtype = mcfg["type"]
+    if not isinstance(mtype, str) or not mtype:
+        raise TypeError(f"[CONFIG ERROR] model.modules.{name}.type must be a non-empty string")
+
+    # strict: don't mutate original dict
+    kwargs = {k: v for k, v in mcfg.items() if k != "type"}
+    mod = get_module(logger=logger, type=mtype, **kwargs)
+    # (optional) attach name for debugging
+    setattr(mod, "__module_name__", name)
+    return mod
+
+# -----------------------------------------------------------------------------
+# Model
+# -----------------------------------------------------------------------------
+
+class Model(nn.Module):
+    """
+    Minimal strict model scaffold that:
+      - builds submodules defined in config["modules"] (dict name -> spec)
+      - optionally orders / exposes a subset via config["use_modules"] (list of names)
+      - provides a ModuleDict `components` (all built modules)
+    Notes:
+      * This class does not implement a specific forward pass.
+        The training/validation processes (get_process graphs) are expected to
+        orchestrate calls to the components explicitly.
+    """
+
+    def __init__(self, config: Dict[str, Any], logger: Optional[logging.Logger] = None, **_ignored):
+        super().__init__()
+        self.logger = logger or logging.getLogger(__name__)
+        if not isinstance(config, dict):
+            raise TypeError("[CONFIG ERROR] Model(config=...) must be a dict-like structure")
+
+        modules_cfg = config.get("modules")
+        if not isinstance(modules_cfg, dict) or not modules_cfg:
+            raise ValueError("[CONFIG ERROR] model.modules must be a non-empty mapping")
+
+        # Build every declared module strictly
+        built = {}
+        for name, mcfg in modules_cfg.items():
+            if not isinstance(name, str) or not name:
+                raise ValueError("[CONFIG ERROR] module name must be a non-empty string")
+            mod = build_module_from_config(name, mcfg, logger=self.logger)
+            built[name] = mod
+
+        # Store as ModuleDict (keeps registration with nn.Module)
+        self.components = nn.ModuleDict(built)
+
+        # Optional: an ordered list of module names used by downstream process graphs
+        self.use_modules = list(config.get("use_modules", self.components.keys()))
+        # Basic validation: names in use_modules must exist
+        for n in self.use_modules:
+            if n not in self.components:
+                raise KeyError(f"[CONFIG ERROR] model.use_modules contains unknown module name '{n}'")
+
+        # Optional: initialization policy, seeds or other meta
+        self.init_cfg = dict(config.get("init", {}))
+        self._apply_init_policy()
+
+        # Store raw config if needed by hooks or savers
+        self.raw_config = config
+
+        self.logger.debug("[Model] Built modules: %s", list(self.components.keys()))
+        self.logger.debug("[Model] use_modules: %s", list(self.use_modules))
+
+    # -------------------------------------------------------------------------
+    # Initialization helpers
+    # -------------------------------------------------------------------------
+    def _apply_init_policy(self) -> None:
+        """
+        Apply a basic initialization policy if requested.
+        Extend here only with explicit, deterministic behaviors.
+        """
+        itype = str(self.init_cfg.get("type", "default")).lower()
+        if itype in ("", "default", "none"):
+            return
+        elif itype == "xavier_uniform":
+            for m in self.modules():
+                if isinstance(m, (nn.Linear, nn.Embedding)):
+                    nn.init.xavier_uniform_(m.weight)
+                if isinstance(m, nn.Linear) and m.bias is not None:
+                    nn.init.zeros_(m.bias)
+        elif itype == "kaiming_normal":
+            for m in self.modules():
+                if isinstance(m, (nn.Linear, nn.Conv1d, nn.Conv2d)):
+                    nn.init.kaiming_normal_(m.weight, nonlinearity="relu")
+                if isinstance(m, nn.Linear) and m.bias is not None:
+                    nn.init.zeros_(m.bias)
+        else:
+            raise ValueError(f"[CONFIG ERROR] Unknown init.type '{self.init_cfg.get('type')}'")
+
+    # -------------------------------------------------------------------------
+    # Accessors
+    # -------------------------------------------------------------------------
+    def get(self, name: str) -> nn.Module:
+        """Return a built component by name (strict)."""
+        try:
+            return self.components[name]
+        except KeyError:
+            raise KeyError(f"[CONFIG ERROR] Unknown component '{name}'")
+
+    def forward(self, *args, **kwargs):
+        """
+        This scaffold intentionally avoids defining a monolithic forward.
+        The pipeline is expected to call specific components in configured order.
+        """
+        raise NotImplementedError(
+            "Model.forward is intentionally undefined in strict mode. "
+            "Use process graphs (get_process) to orchestrate component calls."
         )
 
-    valid = set(signature(cls.__init__).parameters.keys())
-    uargs = {k: kwargs.pop(k) for k in list(kwargs.keys()) if k in valid}
-    if kwargs:
-        logger.warning("Unknown kwarg in %s: %s", cls.__name__, kwargs)
-    return cls(**uargs)
-
-
-# ---------------------------------------------------------------------
-# Model
-# ---------------------------------------------------------------------
-class Model(nn.ModuleDict):
-    """
-    Manage multiple submodules built from config.
-    Provides simple forward-processing pipeline, load/save helpers.
-    """
-    def __init__(
-        self,
-        logger: logging.Logger,
-        modules: dict,
-        use_modules: list = None,
-        omit_modules: list = None,
-        seed: int = None,
-        init: dict = None,
-    ):
-        if seed is not None:
-            torch.manual_seed(seed)
-            torch.cuda.manual_seed(seed)
-
-        if use_modules is not None and omit_modules is not None:
-            raise ValueError("Specify either use_modules or omit_modules, not both.")
-
-        # build modules
-        mods = OrderedDict()
-        for name, cfg in modules.items():
-            if use_modules is not None and name not in use_modules:
-                continue
-            if omit_modules is not None and name in omit_modules:
-                continue
-            logger.debug("Building module: %s", name)
-            mods[name] = get_module(logger=logger, **cfg)
-
-        super().__init__(modules=mods)
-        self.logger = logger
-
-        # optional init
-        if init:
-            self._apply_initialization(init)
-
-    def _apply_initialization(self, init_config: dict):
-        """Apply parameter initialization based on config (pattern match)."""
-        for name, tensor in self.state_dict().items():
-            for pattern, cfg in init_config.items():
-                if pattern in name:
-                    init_config2func(cfg)(tensor)
-
-    def forward(self, batch: dict, processes: list):
-        """
-        Run a sequence of 'process' callables on (self, batch).
-        Each process is assumed to have signature process(model, batch).
-        """
-        for i, proc in enumerate(processes):
-            if PRINT_PROCESS:
-                print(f"-----process {i}-----")
-                for k, v in batch.items():
-                    if isinstance(v, (torch.Tensor, np.ndarray)):
-                        print(f"  {k}: {list(v.shape)}")
-                    else:
-                        print(f"  {k}: {type(v).__name__}")
-            proc(self, batch)
-        return batch
-
-    # ------------------ I/O helpers ------------------
-    def load(self, path: str, replace: dict = None, strict: bool = True):
-        replace = replace or {}
-        if os.path.isfile(path):
-            self._load_from_file(path, replace, strict)
-        elif os.path.isdir(path):
-            self._load_from_directory(path, replace, strict)
-        else:
-            raise FileNotFoundError(path)
-
-    def _load_from_file(self, path: str, replace: dict, strict: bool):
-        device = next(self.parameters()).device
-        state = torch.load(path, map_location=device)
-
-        # key replacements
-        if replace:
-            for old, new in list(replace.items()):
-                for k in list(state.keys()):
-                    if k.startswith(old):
-                        state[new + k[len(old):]] = state[k]
-                        del state[k]
-
-        result = self.load_state_dict(state, strict=strict)
-        self._report_loading_issues(result)
-
-    def _load_from_directory(self, path: str, replace: dict, strict: bool):
-        device = next(self.parameters()).device
-        inv = {v: k for k, v in (replace or {}).items()}
-        for mname, module in self.items():
-            oname = inv.get(mname, mname)
-            mpath = os.path.join(path, f"{oname}.pth")
-            if os.path.exists(mpath):
-                result = module.load_state_dict(torch.load(mpath, map_location=device), strict=strict)
-                self._report_loading_issues(result, module_name=mname)
-            elif strict:
-                raise ValueError(f"State dict file of {mname} does not exist.")
-            else:
-                self.logger.warning("State dict file of %s does not exist.", mname)
-
-    def _report_loading_issues(self, result, module_name: str = None):
-        prefix = f"in {module_name} " if module_name else ""
-        if result.missing_keys:
-            self.logger.warning("Missing keys %s:", prefix)
-            for k in result.missing_keys:
-                self.logger.warning("  %s", k)
-        if result.unexpected_keys:
-            self.logger.warning("Unexpected keys %s:", prefix)
-            for k in result.unexpected_keys:
-                self.logger.warning("  %s", k)
-
-    def save_state_dict(self, path: str):
-        os.makedirs(path, exist_ok=True)
-        for name, module in self.items():
-            torch.save(module.state_dict(), os.path.join(path, f"{name}.pth"))
+# -----------------------------------------------------------------------------
+# Convenience: one-shot registration import hook (optional)
+# -----------------------------------------------------------------------------
+# If you prefer to populate the registry here explicitly, you can import
+# concrete classes and call `register_module("TypeName", Class)` below.
+# For example:
+#
+# from notate.modules.sequence import TransformerEncoder, TransformerDecoder, GreedyDecoder
+# from notate.modules.poolers import Pooler
+# from notate.modules.tunnel import GaussianSampler
+# from notate.modules.vae import Linear, LinearClassifier, PositionalEmbedding, TeacherForcer, SequenceMasker
+#
+# register_module("TransformerEncoder", TransformerEncoder)
+# register_module("TransformerDecoder", TransformerDecoder)
+# register_module("GreedyDecoder", GreedyDecoder)
+# register_module("Pooler", Pooler)
+# register_module("GaussianSampler", GaussianSampler)
+# register_module("Linear", Linear)
+# register_module("LinearClassifier", LinearClassifier)
+# register_module("PositionalEmbedding", PositionalEmbedding)
+# register_module("TeacherForcer", TeacherForcer)
+# register_module("SequenceMasker", SequenceMasker)
+#
+# …etc.
+#
+# Alternatively, each module file can self-register on import to keep concerns local.
