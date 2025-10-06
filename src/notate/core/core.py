@@ -2,9 +2,9 @@
 Core model components and utilities.
 
 - Weight/init/function registries for config-driven setup
-- Auto-registration of torch.nn.Module classes under notate.modules.*
+- Auto-registration & lazy resolution of torch.nn.Module classes
 - Simple custom module: Affine
-- Model: module factory, (de)serialization helpers
+- Model: module factory and (de)serialization helpers
 """
 import os
 import math
@@ -102,9 +102,9 @@ def init_config2func(type="none", factor=None, **kwargs):
 
 
 # ---------------------------------------------------------------------
-# Module registry (legacy + auto)
+# Module registry (legacy + auto + lazy)
 # ---------------------------------------------------------------------
-module_type2class = {}
+module_type2class: dict[str, type[nn.Module]] = {}
 
 class Affine(nn.Module):
     """output = input * weight + bias"""
@@ -115,26 +115,28 @@ class Affine(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return x * self.weight + self.bias
 
-# keep legacy registrations
+# legacy registration
 module_type2class["Affine"] = Affine
+
+# -------- auto registration helpers --------
+_CANDIDATE_MODULES = [
+    "notate.modules.poolers",
+    "notate.modules.tunnel",
+    "notate.modules.vae",
+    "notate.modules.sequence",
+    # downstream depends on optuna; skip here
+]
 
 def _to_snake(name: str) -> str:
     return re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()
 
 def _collect_module_classes():
     """
-    Collect torch.nn.Module subclasses from notate.modules.* and
+    Collect torch.nn.Module subclasses from candidate modules and
     register both 'CamelCase' and 'snake_case' keys.
     """
-    candidates = [
-        "notate.modules.poolers",
-        "notate.modules.tunnel",
-        "notate.modules.vae",
-        "notate.modules.sequence",
-        # downstream depends on optuna; skip here
-    ]
     reg = {}
-    for modname in candidates:
+    for modname in _CANDIDATE_MODULES:
         try:
             m = importlib.import_module(modname)
         except Exception:
@@ -148,9 +150,52 @@ def _collect_module_classes():
                 pass
     return reg
 
-# merge auto-registrations
+# merge auto-registrations (best-effort)
 module_type2class.update(_collect_module_classes())
 
+# -------- lazy resolution (when not yet registered) --------
+def _lazy_resolve_and_register(type_name: str):
+    """
+    If a module type is not registered, try to locate it dynamically
+    in candidate modules and register it (CamelCase & snake_case).
+    """
+    # 1) direct getattr by CamelCase
+    for modname in _CANDIDATE_MODULES:
+        try:
+            m = importlib.import_module(modname)
+            cls = getattr(m, type_name, None)
+            if inspect.isclass(cls) and issubclass(cls, nn.Module):
+                module_type2class[type_name] = cls
+                module_type2class[_to_snake(type_name)] = cls
+                return cls
+        except Exception:
+            pass
+    # 2) snake_case try
+    snake = _to_snake(type_name)
+    for modname in _CANDIDATE_MODULES:
+        try:
+            m = importlib.import_module(modname)
+            cls = getattr(m, snake, None)
+            if inspect.isclass(cls) and issubclass(cls, nn.Module):
+                module_type2class[type_name] = cls
+                module_type2class[snake] = cls
+                return cls
+        except Exception:
+            pass
+    # 3) exhaustive scan by class name equality
+    for modname in _CANDIDATE_MODULES:
+        try:
+            m = importlib.import_module(modname)
+            for cname, cls in inspect.getmembers(m, inspect.isclass):
+                if cname == type_name and issubclass(cls, nn.Module):
+                    module_type2class[type_name] = cls
+                    module_type2class[_to_snake(cname)] = cls
+                    return cls
+        except Exception:
+            pass
+    return None
+
+# info log (optional)
 logging.getLogger(__name__).info(
     "[core] module_type2class registered: %d modules", len(module_type2class)
 )
@@ -164,10 +209,15 @@ def get_module(logger: logging.Logger, type: str, **kwargs) -> nn.Module:
     Create module instance from type and configuration.
     Unknown kwargs are warned and ignored.
     """
-    if type not in module_type2class:
-        raise KeyError(f"Module type '{type}' not found "
-                       f"(registered={len(module_type2class)}).")
-    cls = module_type2class[type]
+    cls = module_type2class.get(type)
+    if cls is None:
+        cls = _lazy_resolve_and_register(type)
+    if cls is None:
+        sample = list(module_type2class.keys())[:20]
+        raise KeyError(
+            f"Module type '{type}' not found (registered={len(module_type2class)}; sample={sample})"
+        )
+
     valid = set(signature(cls.__init__).parameters.keys())
     uargs = {k: kwargs.pop(k) for k in list(kwargs.keys()) if k in valid}
     if kwargs:
