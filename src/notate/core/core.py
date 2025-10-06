@@ -5,20 +5,29 @@ notate.core.core
 - Robust resolver for module classes
 - Factory to build modules from config
 - Model container that injects module registry for cross-module access
+- Utility: function_config2func (used by training.process) and PRINT_PROCESS flag
 """
 
 from __future__ import annotations
 import importlib
 import inspect
-from typing import Any, Dict, Mapping, MutableMapping, Optional, Type
+from typing import Any, Dict, Mapping, MutableMapping, Optional, Type, Callable, Iterable, Sequence
 
-# ---- central registry (shared with notate.modules.__init__) ----
+# ------------------------------------------------------------------------------
+# Global flags (training.process expects this)
+# ------------------------------------------------------------------------------
+PRINT_PROCESS: bool = False  # training.process が参照するログトグル
+
+
+# ------------------------------------------------------------------------------
+# Central registry (shared with notate.modules.__init__)
+# ------------------------------------------------------------------------------
 module_type2class: Dict[str, Type] = {}
 
 
-# ----------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 # Utilities
-# ----------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 def _maybe_str_format(val: Any, variables: Optional[Mapping[str, Any]] = None) -> Any:
     """Mild variable substitution helper (keeps unknowns)."""
     if variables is None:
@@ -36,7 +45,7 @@ def _maybe_str_format(val: Any, variables: Optional[Mapping[str, Any]] = None) -
 
 
 def _is_fully_qualified(name: str) -> bool:
-    return "." in name and not name.endswith(".")
+    return isinstance(name, str) and "." in name and not name.endswith(".")
 
 
 def _resolve_fully_qualified(name: str) -> Optional[Type]:
@@ -54,9 +63,168 @@ def _resolve_fully_qualified(name: str) -> Optional[Type]:
     return getattr(mod, cls_name, None)
 
 
-# ----------------------------------------------------------------------
+# ------------------------------------------------------------------------------
+# Function resolver (training.process expects `function_config2func`)
+# ------------------------------------------------------------------------------
+def function_config2func(fcfg: Mapping[str, Any]) -> Callable:
+    """
+    Convert a function config dict into a Python callable.
+    Minimal but practical coverage for typical tensor ops used in loops.
+
+    Expected format:
+      fcfg = {"type": "<name>", ...extra kwargs...}
+
+    The returned callable is typically used as: out = fn(x, **kwargs_from_fcfg)
+    NOTE: Some functions (like 'cat', 'stack') expect input to be a list/sequence.
+    """
+    if not isinstance(fcfg, Mapping) or "type" not in fcfg:
+        raise ValueError(f"function_config2func: invalid config {fcfg}")
+
+    ftype = fcfg.get("type")
+    # ---- Built-ins ----
+    if ftype == "identity":
+        def _fn(x, **kw): return x
+        return _fn
+
+    if ftype == "transpose":
+        # supports keys: dim0, ...1  (to be compatible with your YAML)
+        def _fn(x, dim0=0, **kw):
+            dim1 = kw.get("...1", 1)
+            return x.transpose(dim0, dim1)
+        return _fn
+
+    if ftype == "permute":
+        def _fn(x, *dims, **kw):
+            if not dims:
+                dims = tuple(kw.get("dims", []))
+            return x.permute(*dims)
+        return _fn
+
+    if ftype == "reshape":
+        def _fn(x, *shape, **kw):
+            if not shape:
+                shape = tuple(kw.get("shape", []))
+            return x.reshape(*shape)
+        return _fn
+
+    if ftype == "unsqueeze":
+        def _fn(x, dim=0, **kw):
+            return x.unsqueeze(dim)
+        return _fn
+
+    if ftype == "squeeze":
+        def _fn(x, dim=None, **kw):
+            return x.squeeze() if dim is None else x.squeeze(dim)
+        return _fn
+
+    if ftype == "cat":
+        def _fn(xs, dim=0, **kw):
+            import torch
+            return torch.cat(xs, dim=dim)
+        return _fn
+
+    if ftype == "stack":
+        def _fn(xs, dim=0, **kw):
+            import torch
+            return torch.stack(xs, dim=dim)
+        return _fn
+
+    if ftype == "getitem":
+        def _fn(x, key=None, **kw):
+            return x[key]
+        return _fn
+
+    if ftype == "len":
+        def _fn(x, **kw):
+            return len(x)
+        return _fn
+
+    if ftype == "to":
+        def _fn(x, device=None, dtype=None, non_blocking=False, **kw):
+            if device is None and dtype is None:
+                return x
+            return x.to(device=device, dtype=dtype, non_blocking=non_blocking)
+        return _fn
+
+    if ftype == "detach":
+        def _fn(x, **kw):
+            return x.detach()
+        return _fn
+
+    # reductions
+    if ftype == "mean":
+        def _fn(x, dim=None, keepdim=False, **kw):
+            return x.mean(dim=dim, keepdim=keepdim) if dim is not None else x.mean()
+        return _fn
+
+    if ftype == "sum":
+        def _fn(x, dim=None, keepdim=False, **kw):
+            return x.sum(dim=dim, keepdim=keepdim) if dim is not None else x.sum()
+        return _fn
+
+    if ftype == "max":
+        def _fn(x, dim=None, keepdim=False, **kw):
+            import torch
+            if dim is None:
+                return x.max()
+            return torch.max(x, dim=dim, keepdim=keepdim).values
+        return _fn
+
+    if ftype == "min":
+        def _fn(x, dim=None, keepdim=False, **kw):
+            import torch
+            if dim is None:
+                return x.min()
+            return torch.min(x, dim=dim, keepdim=keepdim).values
+        return _fn
+
+    # basic arithmetic
+    if ftype == "add":
+        def _fn(x, y, **kw):
+            return x + y
+        return _fn
+
+    if ftype == "sub":
+        def _fn(x, y, **kw):
+            return x - y
+        return _fn
+
+    if ftype == "mul":
+        def _fn(x, y, **kw):
+            return x * y
+        return _fn
+
+    if ftype == "div":
+        def _fn(x, y, **kw):
+            return x / y
+        return _fn
+
+    # fallback: allow fully-qualified function path "pkg.mod:func" or "pkg.mod.func"
+    if isinstance(ftype, str):
+        # colon form
+        if ":" in ftype:
+            mod_name, fn_name = ftype.split(":", 1)
+        elif "." in ftype:
+            # last dot separates attribute
+            mod_name, fn_name = ftype.rsplit(".", 1)
+        else:
+            mod_name, fn_name = None, None
+
+        if mod_name and fn_name:
+            try:
+                mod = importlib.import_module(mod_name)
+                fn = getattr(mod, fn_name, None)
+                if callable(fn):
+                    return fn
+            except Exception:
+                pass
+
+    raise KeyError(f"function_config2func: unknown function type '{ftype}' in {fcfg}")
+
+
+# ------------------------------------------------------------------------------
 # Class resolver (ROBUST)
-# ----------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 def resolve_module_class(type_name: str) -> Type:
     """
     Resolve a module class by type name with robust fallbacks.
@@ -122,9 +290,9 @@ def resolve_module_class(type_name: str) -> Type:
     raise ImportError(f"Unable to resolve module class for type='{type_name}'")
 
 
-# ----------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 # Factory
-# ----------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 def build_module_from_config(
     name: str,
     mcfg: Mapping[str, Any],
@@ -175,9 +343,9 @@ def build_module_from_config(
     return instance
 
 
-# ----------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 # Model container
-# ----------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 import torch
 import torch.nn as nn
 
