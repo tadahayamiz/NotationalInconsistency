@@ -46,17 +46,47 @@ def build_logger(result_dir: str, cfg: ADict):
     logger.info(f"[result_dir] {result_dir}")
     return logger
 
-def build_hooks(logger, result_dir: str, hook_cfg_list: List[dict]):
+def build_hooks(logger, result_dir: str, hook_cfg):
+    """
+    hook_cfg は list でも dict でも受け付ける。
+    dict の場合は {name: {type: ..., ...}} を想定し、値部分を取り出して登録する。
+    可能なら logger/result_dir を kwargs に注入する（余分なら get_hook 側が無視）。
+    """
+    if not hook_cfg:
+        return []
+
+    # 正規化：list[dict] にそろえる
+    if isinstance(hook_cfg, dict):
+        hook_items = []
+        for _name, hk in hook_cfg.items():
+            if hk is None:
+                continue
+            if not isinstance(hk, dict):
+                raise ValueError(f"Invalid hook config for '{_name}': {hk}")
+            # 名前は使わないが、必要なら hk["name"] = _name を付与してもよい
+            hook_items.append(hk)
+    elif isinstance(hook_cfg, list):
+        hook_items = hook_cfg
+    else:
+        raise ValueError(f"Invalid pre_hooks/post_hooks type: {type(hook_cfg)}")
+
     hooks = []
-    if not hook_cfg_list:
-        return hooks
-    for hk in hook_cfg_list:
+    for hk in hook_items:
         hk = dict(hk)  # shallow copy
+        if "type" not in hk:
+            raise ValueError(f"Hook config missing 'type': {hk}")
         htype = hk.pop("type")
+        # 可能なら logger/result_dir を注入（get_hook 側が受け取らなくても OK）
+        if "logger" not in hk:
+            hk["logger"] = logger
+        if "result_dir" not in hk:
+            hk["result_dir"] = result_dir
+
         hook = get_hook(type=htype, **hk)
         hooks.append(hook)
         logger.info(f"[hook] registered: {htype} ({hk})")
     return hooks
+
 
 def set_seed(seed: Union[int, None]):
     if seed is None:
