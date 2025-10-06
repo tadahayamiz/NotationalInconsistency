@@ -1,418 +1,238 @@
+# -*- coding: utf-8 -*-
 """
-Core model components and utilities.
-
-- Weight/init/function registries for config-driven setup
-- Auto-registration & lazy resolution of torch.nn.Module classes
-- Simple custom module: Affine
-- Model: module factory and (de)serialization helpers
+notate.core.core
+- Central registry for module types
+- Robust resolver for module classes
+- Factory to build modules from config
+- Model container that injects module registry for cross-module access
 """
-import os
-import math
-import logging
-from collections import OrderedDict
-from functools import partial
-from inspect import signature
 
+from __future__ import annotations
 import importlib
 import inspect
-from typing import Any, Dict, Callable, List, Tuple
+from typing import Any, Dict, Mapping, MutableMapping, Optional, Type
 
-import numpy as np
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
+# ---- central registry (shared with notate.modules.__init__) ----
+module_type2class: Dict[str, Type] = {}
 
 
-# ---------------------------------------------------------------------
-# Debug option
-# ---------------------------------------------------------------------
-PRINT_PROCESS = False
+# ----------------------------------------------------------------------
+# Utilities
+# ----------------------------------------------------------------------
+def _maybe_str_format(val: Any, variables: Optional[Mapping[str, Any]] = None) -> Any:
+    """Mild variable substitution helper (keeps unknowns)."""
+    if variables is None:
+        return val
+    if isinstance(val, str):
+        try:
+            return val.format(**variables)
+        except Exception:
+            return val
+    if isinstance(val, list):
+        return [_maybe_str_format(v, variables) for v in val]
+    if isinstance(val, dict):
+        return {k: _maybe_str_format(v, variables) for k, v in val.items()}
+    return val
 
 
-# ---------------------------------------------------------------------
-# Activations / functions
-# ---------------------------------------------------------------------
-def gelu(x):  # noqa: D401
-    """GELU."""
-    return F.gelu(x)
+def _is_fully_qualified(name: str) -> bool:
+    return "." in name and not name.endswith(".")
 
 
-def swish(x):
-    return x * torch.sigmoid(x)
-
-
-activation_name2func = {
-    "relu": F.relu,
-    "gelu": gelu,
-    "swish": swish,
-    "tanh": torch.tanh,
-    "sigmoid": torch.sigmoid,
-    "softplus": F.softplus,
-    "identity": lambda x: x,
-}
-
-# You can register more functions here as needed.
-function_name2func: Dict[str, Callable] = {
-    "softmax": F.softmax,
-    "log_softmax": F.log_softmax,
-    "relu": F.relu,
-}
-
-
-def function_config2func(config):
-    """Return callable from (str|dict). If dict, expects {'type': name, ...kwargs}."""
-    if isinstance(config, str):
-        return function_name2func[config]
-    cfg = dict(config)
-    ftype = cfg.pop("type")
-    return partial(function_name2func[ftype], **cfg)
-
-
-# ---------------------------------------------------------------------
-# Initializers
-# ---------------------------------------------------------------------
-init_type2func = {
-    "glorot_uniform": nn.init.xavier_uniform_,
-    "glorot_normal": nn.init.xavier_normal_,
-    "kaiming_uniform": nn.init.kaiming_uniform_,
-    "kaiming_normal": nn.init.kaiming_normal_,
-    "normal_": nn.init.normal_,
-    "uniform_": nn.init.uniform_,
-}
-
-
-def apply_init_(module: nn.Module, init_cfg: dict, *, logger: logging.Logger = None):
-    """Apply param initializer config to module in-place."""
-    if not init_cfg:
-        return
-    init_cfg = dict(init_cfg)
-    itype = init_cfg.pop("type", None)
-    if not itype:
-        return
-    if itype not in init_type2func:
-        raise KeyError(f"Unknown init type: {itype}")
-    fn = init_type2func[itype]
-    for name, p in module.named_parameters():
-        if p.requires_grad:
-            fn(p, **init_cfg)
-            if logger:
-                logger.debug(f"[init] {module.__class__.__name__}.{name} <- {itype}({init_cfg})")
-
-
-# ---------------------------------------------------------------------
-# Auto registration / import helpers
-# ---------------------------------------------------------------------
-def _camel_to_snake(name: str) -> str:
-    out = []
-    for i, ch in enumerate(name):
-        if ch.isupper() and i > 0:
-            out.append("_")
-        out.append(ch.lower())
-    return "".join(out)
-
-
-def _lazy_import(module_path: str, class_name: str):
-    """Import module_path and get class_name, with fallback to name variants."""
-    try:
-        mod = importlib.import_module(module_path)
-    except Exception as e:
-        raise ImportError(f"Failed to import {module_path}") from e
-
-    # direct
-    if hasattr(mod, class_name):
-        return getattr(mod, class_name)
-
-    # try CamelCase / snake_case variations
-    variants = {class_name, class_name.capitalize(), _camel_to_snake(class_name)}
-    for attr in variants:
-        if hasattr(mod, attr):
-            return getattr(mod, attr)
-    # search all classes
-    for name, obj in inspect.getmembers(mod, inspect.isclass):
-        if name.lower() == class_name.lower():
-            return obj
-    raise ImportError(f"Class '{class_name}' not found in {module_path}")
-
-
-def resolve_module_class(type_name: str):
+def _resolve_fully_qualified(name: str) -> Optional[Type]:
     """
-    Resolve a class object from known namespaces or dotted path.
-
-    - If dotted: import directly.
-    - Else: try local 'modules' package and common name variants.
+    Resolve 'package.subpackage.ClassName' safely.
     """
     try:
-        import importlib
-        importlib.import_module("notate.modules")
-    except Exception:
-        pass
-
-    if "." in type_name:
-        module_path, cls_name = type_name.rsplit(".", 1)
-        return _lazy_import(module_path, cls_name)
-
-    # Try local namespace 'modules'
+        mod_name, cls_name = name.rsplit(".", 1)
+    except ValueError:
+        return None
     try:
-        return _lazy_import("modules", type_name)
+        mod = importlib.import_module(mod_name)
     except Exception:
-        pass
+        return None
+    return getattr(mod, cls_name, None)
 
-    # Try torch.nn
+
+# ----------------------------------------------------------------------
+# Class resolver (ROBUST)
+# ----------------------------------------------------------------------
+def resolve_module_class(type_name: str) -> Type:
+    """
+    Resolve a module class by type name with robust fallbacks.
+
+    Order:
+      1) module_type2class (already registered)
+      2) import notate.modules (its __init__ should register types)
+      3) getattr(notate.modules, type_name)
+      4) import notate.modules.<sub> for sub in ["pipeline","sequence","vae","tunnel","poolers"]
+         then check registry/getattr
+      5) fully-qualified resolution if type_name looks like 'pkg.mod.Class'
+    """
+    if not type_name or not isinstance(type_name, str):
+        raise ImportError(f"Invalid module type: {type_name}")
+
+    # 1) already in registry
+    cls = module_type2class.get(type_name)
+    if cls is not None:
+        return cls
+
+    # 5) fully qualified path support (early try if provided)
+    if _is_fully_qualified(type_name):
+        fq = _resolve_fully_qualified(type_name)
+        if fq is not None:
+            return fq
+
+    # 2) import main package (triggers __init__ registrations)
+    pkg = None
     try:
-        return _lazy_import("torch.nn", type_name)
+        pkg = importlib.import_module("notate.modules")
     except Exception:
-        pass
+        pkg = None
+
+    # 2') check registry again
+    cls = module_type2class.get(type_name)
+    if cls is not None:
+        return cls
+
+    # 3) getattr from package
+    if pkg is not None and hasattr(pkg, type_name):
+        return getattr(pkg, type_name)
+
+    # 4) try submodules
+    for sub in ("pipeline", "sequence", "vae", "tunnel", "poolers"):
+        try:
+            m = importlib.import_module(f"notate.modules.{sub}")
+        except Exception:
+            continue
+        # registry first
+        cls = module_type2class.get(type_name)
+        if cls is not None:
+            return cls
+        # then getattr
+        if hasattr(m, type_name):
+            return getattr(m, type_name)
+
+    # Last: try fully-qualified again (in case submodule imports added path)
+    if _is_fully_qualified(type_name):
+        fq = _resolve_fully_qualified(type_name)
+        if fq is not None:
+            return fq
 
     raise ImportError(f"Unable to resolve module class for type='{type_name}'")
 
 
-def _filter_kwargs_for_class(cls, kwargs: dict, logger: logging.Logger = None, name: str = "") -> dict:
-    """Filter kwargs to only those accepted by cls.__init__."""
-    sig = signature(cls.__init__)
-    valid = set(sig.parameters.keys())
-    valid.discard("self")
-    uargs = {k: v for k, v in kwargs.items() if k in valid}
-    if logger:
-        unknown = sorted(set(kwargs.keys()) - set(uargs.keys()))
-        if unknown:
-            logger.warning(f"[{name}] Unknown kwargs for {cls.__name__}: {unknown}")
-    return uargs
-
-
-def build_module_from_config(name: str, cfg: dict, logger: logging.Logger = None) -> nn.Module:
-    """Build a single module from config entry: {'type': ..., ...kwargs}."""
-    cfg = dict(cfg)
-    mtype = cfg.pop("type")
-    cls = resolve_module_class(mtype)
-    kwargs = _filter_kwargs_for_class(cls, cfg, logger=logger, name=name)
-    module = cls(**kwargs)
-    return module
-
-
-# ---------------------------------------------------------------------
-# Simple custom module
-# ---------------------------------------------------------------------
-class Affine(nn.Module):
-    def __init__(self, weight=1.0, bias=0.0):
-        super().__init__()
-        self.weight = nn.Parameter(torch.tensor(float(weight)))
-        self.bias = nn.Parameter(torch.tensor(float(bias)))
-
-    def forward(self, input):
-        return input * self.weight + self.bias
-
-
-# ---------------------------------------------------------------------
-# Model
-# ---------------------------------------------------------------------
-class Model(nn.ModuleDict):
+# ----------------------------------------------------------------------
+# Factory
+# ----------------------------------------------------------------------
+def build_module_from_config(
+    name: str,
+    mcfg: Mapping[str, Any],
+    logger: Optional[Any] = None,
+    variables: Optional[Mapping[str, Any]] = None,
+) -> Any:
     """
-    Manage multiple submodules built from config.
-    Provides simple forward-processing pipeline, load/save helpers.
+    Instantiate a module from config dict (expects 'type' key).
+    - Pass 'logger' if the constructor supports it.
+    - Perform mild string formatting with variables.
     """
-    def __init__(
-        self,
-        logger: logging.Logger,
-        modules: dict,
-        use_modules: list = None,
-        omit_modules: list = None,
-        seed: int = None,
-        init: dict = None,
-    ):
-        if seed is not None:
-            torch.manual_seed(seed)
-            np.random.seed(seed)
+    if not isinstance(mcfg, Mapping):
+        raise TypeError(f"module config for '{name}' must be a mapping, got {type(mcfg)}")
 
-        self.logger = logger or logging.getLogger(__name__)
+    if "type" not in mcfg:
+        raise KeyError(f"module '{name}' requires 'type' in config")
 
-        # select subset
-        use_modules = list(use_modules) if use_modules else None
-        omit_modules = set(omit_modules) if omit_modules else set()
+    mtype = mcfg["type"]
+    cls = resolve_module_class(str(mtype))
 
-        built = OrderedDict()
-        for name, mcfg in modules.items():
-            if use_modules is not None and name not in use_modules:
-                continue
-            if name in omit_modules:
-                continue
-            module = build_module_from_config(name, mcfg, logger=self.logger)
-            built[name] = module
+    # prepare kwargs (exclude 'type')
+    kwargs = {k: v for k, v in mcfg.items() if k != "type"}
+    if variables:
+        kwargs = _maybe_str_format(kwargs, variables)
 
-        super().__init__(built)
+    # Inject logger only if accepted
+    try:
+        sig = inspect.signature(cls)
+    except (TypeError, ValueError):
+        sig = None
 
-        # Apply weight init if specified
-        if init:
-            for name, mod in self.items():
-                apply_init_(mod, init, logger=self.logger)
+    if logger is not None and sig is not None and "logger" in sig.parameters:
+        kwargs.setdefault("logger", logger)
 
-        # (Optional) print module summary
-        if PRINT_PROCESS:
-            self.logger.debug("[Model] modules: %s", list(self.keys()))
+    # Instantiate
+    try:
+        instance = cls(**kwargs)
+    except TypeError as e:
+        # Provide more context
+        raise TypeError(f"Failed to instantiate '{name}' as {cls.__name__} with kwargs={kwargs}: {e}") from e
 
-    # -------------------------------
-    # (De)serialization helpers
-    # -------------------------------
-    def load_state_dicts(self, path: str, strict: bool = False):
-        """Load state dicts from a directory of {name}.pth"""
-        for name, module in self.items():
-            p = os.path.join(path, f"{name}.pth")
-            if not os.path.exists(p):
-                self.logger.warning("Missing state file for %s: %s", name, p)
-                continue
-            sd = torch.load(p, map_location="cpu")
-            result = module.load_state_dict(sd, strict=strict)
-            if result.missing_keys:
-                self.logger.warning("Missing keys in %s: %s", name, result.missing_keys)
-            if result.unexpected_keys:
-                self.logger.warning("Unexpected keys in %s: %s", name, result.unexpected_keys)
+    # Attach a back-reference name if it helps debugging
+    try:
+        setattr(instance, "_module_name", name)
+    except Exception:
+        pass
 
-    def save_state_dicts(self, path: str):
-        os.makedirs(path, exist_ok=True)
-        for name, module in self.items():
-            torch.save(module.state_dict(), os.path.join(path, f"{name}.pth"))
-
-    # (任意で追加) 互換API
-    def save_state_dict(self, path: str):
-        self.save_state_dicts(path)
+    return instance
 
 
-# === Added: PipelineModule (config-driven loop executor) ===
+# ----------------------------------------------------------------------
+# Model container
+# ----------------------------------------------------------------------
 import torch
 import torch.nn as nn
 
-class PipelineModule(nn.Module):
+
+class Model(nn.Module):
     """
-    Execute config-defined train_loop/val_loop.
-    This module acts as a single entry point for ForwardProcess (process.type=forward).
+    Thin container that builds modules from config and injects a registry so that
+    modules can access siblings (e.g., PipelineModule resolving named modules).
     """
-    def __init__(self, train_loop=None, val_loop=None, loss_names=None, logger=None):
+
+    def __init__(
+        self,
+        modules: Optional[Mapping[str, Mapping[str, Any]]] = None,
+        logger: Optional[Any] = None,
+        variables: Optional[Mapping[str, Any]] = None,
+        *args,
+        **kwargs,
+    ):
         super().__init__()
-        self.train_loop = train_loop or []
-        self.val_loop   = val_loop or []
-        self.loss_names = loss_names or []
-        self.logger     = logger
-        self._module_registry = None
-        self._function_registry = {}
+        self.logger = logger
+        self.variables = dict(variables) if variables else {}
+        self._built_modules: Dict[str, nn.Module] = {}
 
-    def attach_registry(self, registry: dict):
-        self._module_registry = registry
+        # Allow extra kwargs for compatibility; ignore them
+        _ = args, kwargs
 
-    def forward(self, input=None, mode="train", **batch):
-        if input is None and batch:
-            ctx = dict(batch)
-        elif isinstance(input, dict):
-            ctx = dict(input)
-        else:
-            ctx = {}
-        loop = self.train_loop if mode == "train" else self.val_loop
-        for step in loop:
-            stype = step.get("type", "module")
-            if stype == "function":
-                self._run_function_step(ctx, step); continue
-            if stype == "iterate":
-                self._run_iterate_step(ctx, step); continue
-            self._run_module_step(ctx, step)
-        losses = {name: ctx[name] for name in self.loss_names if name in ctx}
-        return losses if losses else ctx
-
-    # helpers
-    def _get_module(self, name: str):
-        if not self._module_registry:
-            raise RuntimeError("PipelineModule: module registry not attached.")
-        if name not in self._module_registry:
-            raise KeyError(f"PipelineModule: unknown module '{name}'")
-        return self._module_registry[name]
-
-    def _resolve_input(self, ctx, spec):
-        if spec is None: return None
-        if isinstance(spec, list):
-            return [self._resolve_input(ctx, s) for s in spec]
-        if isinstance(spec, dict):
-            return {k: self._resolve_input(ctx, v) for k, v in spec.items()}
-        return ctx[spec] if isinstance(spec, str) else spec
-
-    def _as_kwargs(self, ctx, src):
-        if src is None: return {}
-        if isinstance(src, dict):
-            return {k: self._resolve_input(ctx, v) for k, v in src.items()}
-        if isinstance(src, list):
-            return {"args": [self._resolve_input(ctx, v) for v in src]}
-        return {"input": self._resolve_input(ctx, src)}
-
-    def _write_output(self, ctx, dst, out):
-        if dst is None: return
-        if isinstance(dst, list):
-            if isinstance(out, (list, tuple)) and len(dst) == len(out):
-                for k, v in zip(dst, out): ctx[k] = v
-            else:
-                ctx[dst[0]] = out
-        elif isinstance(dst, str):
-            ctx[dst] = out
-        else:
-            raise RuntimeError(f"PipelineModule: invalid output spec: {dst}")
-
-    def _run_module_step(self, ctx, step):
-        name = step.get("module")
-        if not name: raise RuntimeError(f"PipelineModule: module name missing: {step}")
-        mod  = self._get_module(name)
-        kwargs = self._as_kwargs(ctx, step.get("input"))
-        out = mod(**kwargs, mode=step["mode"]) if "mode" in step else mod(**kwargs)
-        self._write_output(ctx, step.get("output"), out)
-
-    def _run_function_step(self, ctx, step):
-        spec = step.get("function", {})
-        ftype = spec.get("type")
-        fn = self._resolve_function(ftype, spec)
-        x  = self._resolve_input(ctx, step.get("input"))
-        fn_kwargs = {k: v for k, v in spec.items() if k != "type"}
-        out = fn(x, **fn_kwargs)
-        self._write_output(ctx, step.get("output"), out)
-
-    def _run_iterate_step(self, ctx, step):
-        length = self._resolve_input(ctx, step["length"])
-        procs  = step["processes"]
-        L = int(length)
-        for i in range(L):
-            ctx["iterate_i"] = i
-            for sub in procs:
-                if sub.get("type", "module") == "function":
-                    self._run_function_step(ctx, sub)
-                else:
-                    self._run_module_step(ctx, sub)
-        ctx.pop("iterate_i", None)
-
-    def _resolve_function(self, ftype, spec):
-        if ftype in self._function_registry: return self._function_registry[ftype]
-        if ftype == "transpose":
-            def _fn(x, dim0=0, **kw):
-                dim1 = kw.get("...1", 1)
-                return x.transpose(dim0, dim1)
-            return _fn
-        raise KeyError(f"PipelineModule: unknown function '{ftype}'")
-
-
-# === Added: registry injection into Model.__init__ ===
-try:
-    _orig_Model___init__ = Model.__init__
-    def _patched_Model___init__(self, *args, **kwargs):
-        _orig_Model___init__(self, *args, **kwargs)
-        # attach registry (name->module) to all submodules
-        try:
-            # Inherit nn.ModuleDict interface: self.items() yields (name, module)
-            registry = {name: mod for name, mod in self.items()}
-            for _name, _mod in registry.items():
+        # Build all modules
+        if modules:
+            for name, mcfg in modules.items():
+                mod = build_module_from_config(name, mcfg, logger=self.logger, variables=self.variables)
+                self._built_modules[name] = mod
+                # also register as attribute for convenience (nn.Module handles submodules)
                 try:
-                    setattr(_mod, "_module_registry", registry)
+                    self.add_module(name, mod)
                 except Exception:
-                    pass
+                    # fallback: setattr (but prefer add_module)
+                    setattr(self, name, mod)
+
+        # ---- inject registry to every module (recommended) ----
+        # Prefer attach_registry(...) if provided, otherwise set _module_registry
+        for _name, _mod in self._built_modules.items():
+            try:
+                registry = self._built_modules
                 if hasattr(_mod, "attach_registry") and callable(_mod.attach_registry):
-                    try:
-                        _mod.attach_registry(registry)
-                    except Exception:
-                        pass
-        except Exception:
-            pass
-    Model.__init__ = _patched_Model___init__
-except Exception:
-    # If Model is not defined, do nothing
-    pass
+                    _mod.attach_registry(registry)
+                else:
+                    setattr(_mod, "_module_registry", registry)
+            except Exception:
+                # Do not block initialization if a module rejects registry
+                pass
+
+    # Optional helpers
+    def get(self, name: str) -> nn.Module:
+        return self._built_modules[name]
+
+    @property
+    def modules_dict(self) -> Dict[str, nn.Module]:
+        return self._built_modules.copy()
