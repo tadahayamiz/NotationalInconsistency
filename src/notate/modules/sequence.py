@@ -5,9 +5,19 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
-from ..core import function_name2func, function_config2func, \
-    init_config2func, module_type2class
+# Simplified: only import what we actually need
+from ..core.core import function_config2func, init_config2func, module_type2class
 import re
+
+# Static activation function mapping (simplified)
+ACTIVATION_FUNCTIONS = {
+    'relu': F.relu,
+    'gelu': F.gelu,
+    'tanh': torch.tanh,
+    'sigmoid': torch.sigmoid,
+    'swish': lambda x: x * torch.sigmoid(x),
+    'silu': F.silu,
+}
 
 # sequence modules
 class TeacherForcer(nn.Module):
@@ -69,7 +79,7 @@ class SelfAttentionLayer_old(nn.TransformerEncoderLayer):
                 +f" XOR 'd_ff_factor'({d_ff_factor})")
         if dim_feedforward is None:
             dim_feedforward = int(d_model*d_ff_factor)
-        activation = function_name2func[activation]
+        activation = ACTIVATION_FUNCTIONS.get(activation, F.relu)  # Default to relu if not found
         super().__init__(d_model=d_model, dim_feedforward=dim_feedforward, activation=activation, norm_first=norm_first, **kwargs)
 
 # 231016 attention weightも返せるようにするため改変 ※__init__の引数の順番が若干変わっている以外は同じ。
@@ -95,7 +105,7 @@ class SelfAttentionLayer(nn.Module):
         self.dropout1 = nn.Dropout(dropout)
         self.dropout2 = nn.Dropout(dropout)
 
-        self.activation = function_name2func[activation]
+        self.activation = ACTIVATION_FUNCTIONS.get(activation, F.relu)  # Default to relu if not found
     
     def forward(self, src: torch.Tensor, src_mask=None, src_key_padding_mask=None, need_weights=False):
         r"""Pass the input through the encoder layer.
