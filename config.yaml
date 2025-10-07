@@ -1,10 +1,8 @@
 # ============================================================
 # config.yaml (runner-side hardening; workers untouched)
-# - Preflight を train/val に適用可能
-# - モジュール引数は実装の __init__ シグネチャに揃え済み
 # ============================================================
 
-# ---------- Preflight ----------
+# ---------- Preflight (runner gate; architecture-neutral) ----------
 preflight:
   enable: true
   max_length: 198
@@ -14,81 +12,141 @@ preflight:
   apply_to_train: true
   apply_to_vals:  true
 
-# ---------- Model ----------
+# ---------- Model (Back to the original architecture) ----------
 model:
   modules:
     teacherforcer:
       type: TeacherForcer
-      length_dim: 1          # ← 必須
+      length_dim: 1
 
     masker:
       type: MaskMaker
-      mask_token: 3          # ← 語彙の [MASK] トークンIDに合わせて変更
+      mask_token: 0
+      dtype: bool
+      direction: equal
 
     enc_embedding:
       type: PositionalEmbedding
-      embedding:             # ← nn.Embedding の純 kwargs（type は書かない）
-        num_embeddings: 400  # (= vocab size)
-        embedding_dim: 512   # (= d_model)
-      max_len: 256
+      embedding:
+        num_embeddings: 1123
+        embedding_dim: 512
+        padding_idx: 0
       dropout: 0.0
+      max_len: 250
 
     encoder:
       type: TransformerEncoder
-      layer:                # SelfAttentionLayer の純 kwargs（type を書かない）
+      layer:
         d_model: 512
         nhead: 8
-        dropout: 0.1
-        activation: gelu    # ← これを追加
         d_ff_factor: 4
-      n_layer: 6
+        dropout: 0.0
+        activation: newgelu
+        layer_norm_eps: 1.0e-09
+      n_layer: 8
+      init:
+        self_attn.in_proj_weight: glorot_uniform
+        self_attn.in_proj_bias: zero
+        self_attn.out_proj.weight: glorot_uniform
+        self_attn.out_proj.bias: zero
+        linear1.weight: {type: normal, mean: 0.0, std: 0.02}
+        linear1.bias: zero
+        linear2.weight: {type: normal, mean: 0.0, std: 0.02}
+        linear2.bias: zero
 
     pooler:
-      type: MeanPooler
+      type: NoAffinePooler
+      input_size: [max_len, batch_size, 512]
 
     latent2mu:
-      type: MLP
-      n_embd: 512           # ← この実装の MLP は n_embd のみ受理
+      type: Tunnel
+      input_size: [batch_size, 1536]
+      layers:
+        - type: linear
+          size: 512
+          init: {bias: zero}
 
     latent2var:
-      type: MLP
-      n_embd: 512
+      type: Tunnel
+      input_size: [batch_size, 1536]
+      layers:
+        - type: linear
+          size: 512
+          init: {bias: zero}
+        - type: function
+          function: {type: softplus}
 
     vae:
       type: VAE
 
     latent2dec:
-      type: MLP
-      n_embd: 512
+      type: Tunnel
+      input_size: [batch_size, 512]
+      layers:
+        - type: affine
+          weight: 10.0
+          bias: 0.0
+        - type: linear
+          size: 512
+          init: {bias: zero}
 
     dec_embedding:
       type: PositionalEmbedding
       embedding:
-        num_embeddings: 400
+        num_embeddings: 129
         embedding_dim: 512
-      max_len: 256
+        padding_idx: 0
       dropout: 0.0
+      max_len: 250
 
     decoder:
-      type: TransformerDecoder
-      layer:                # SelfAttentionLayer の純 kwargs（type を書かない）
+      type: AttentionDecoder
+      max_len: 250
+      layer:
         d_model: 512
         nhead: 8
-        dropout: 0.1
-        activation: gelu    # ← これを追加
-        d_ff_factor: 4
-      n_layer: 6
-      max_len: 256
+        dropout: 0.0
+        layer_norm_eps: 1.0e-09
+        activation: newgelu
+        d_ff_factor: 4           # or dim_feedforward: 2048 (one of them)
+      num_layers: 8
+      init:
+        self_attn.in_proj_weight: glorot_uniform
+        self_attn.in_proj_bias: zero
+        self_attn.out_proj.weight: glorot_uniform
+        self_attn.out_proj.bias: zero
+        linear1.weight: {type: normal, mean: 0.0, std: 0.02}
+        linear1.bias: zero
+        linear2.weight: {type: normal, mean: 0.0, std: 0.02}
+        linear2.bias: zero
 
     dec2proba:
-      type: MLP
-      n_embd: 512
+      type: Tunnel
+      input_size: [batch_size, length, 512]
+      layers:
+        - type: layernorm
+          args: {elementwise_affine: false}
+        - type: linear
+          size: 129
+          init: {bias: zero}
 
     dec_supporter:
       type: GreedyDecoder
       start_token: 1
-      end_token: 2
 
+    sequencece:
+      type: CrossEntropyLoss
+      reduction: sum
+      ignore_index: 0
+
+    -d_kl:
+      type: MinusD_KLLoss
+
+    -d_kl_factor:
+      type: Affine
+      weight: 0.001
+
+  # （use_modules は明示不要ですが、残しても実害はありません）
   use_modules:
     - teacherforcer
     - masker
@@ -103,6 +161,9 @@ model:
     - decoder
     - dec2proba
     - dec_supporter
+    - sequencece
+    - -d_kl
+    - -d_kl_factor
 
   init:
     type: default
@@ -195,31 +256,43 @@ training:
     opt_freq: 1
 
   metrics:
-    perfect:
+    Perfect accuracy:
       type: perfect
-    partial_teacher:
-      type: partial_teacher
-    partial_greedy:
-      type: partial_greedy
+      input: forced
+      target: dec_target
+      pad_token: 0
+    Partial accuracy (greedy decode):
+      type: partial
+      input: greedy
+      target: dec_target
+      pad_token: 0
+    Partial accuracy (teacher forcing):
+      type: partial
+      input: forced
+      target: dec_target
+      pad_token: 0
 
   accumulators:
     - type: numpy
-      name: latent
-      save_dir: "./result_np/latent"
-      fields: ["z", "mu", "var"]
+      input: latent
+      org_type: torch.tensor
+      batch_dim: 0
     - type: numpy
-      name: pred
-      save_dir: "./result_np/pred"
-      fields: ["y_pred", "y_true"]
+      input: mu
+      org_type: torch.tensor
+      batch_dim: 0
+    - type: numpy
+      input: var
+      org_type: torch.tensor
+      batch_dim: 0
 
+  # hooks は runner 側実装（train.py）に依存するため簡素化を維持
   pre_hooks:
     lr_scheduler:
       type: scheduler_alarm
       target: step
       every: 1
-      scheduler:
-        type: warmup
-        warmup: 800
+      scheduler: {type: warmup, warmup: 800}
 
   post_hooks:
     validate:
@@ -231,31 +304,164 @@ training:
       target: step
       every: 5000
 
+  # === Loops: 元の流れに戻す（prepare_cell_forward / force を復元） ===
   train_loop:
-    - op: "forward"
-      inputs: ["src", "tgt"]
-      outputs: ["logits"]
-    - op: "loss"
-      inputs: ["logits", "tgt"]
-      outputs: ["loss"]
-    - op: "backward"
-      inputs: ["loss"]
-    - op: "step"
-    - op: "metrics"
-      inputs: ["logits", "tgt"]
-    - op: "accumulate"
-      inputs: ["z", "mu", "var", "logits", "tgt"]
+    - module: teacherforcer
+      input: target
+      output: [dec_input, dec_target]
+
+    - module: masker
+      input: input
+      output: input_padding_mask
+
+    - module: enc_embedding
+      input: input
+      output: input_emb
+
+    - module: encoder
+      input: [input_emb, input_padding_mask]
+      output: memory
+
+    - type: function
+      function: {type: transpose, dim0: 0, dim1: 1}
+      input: input_padding_mask
+      output: input_padding_mask2
+
+    - module: pooler
+      input: [memory, input_padding_mask2]
+      output: latent_base
+
+    - module: latent2mu
+      input: latent_base
+      output: mu
+
+    - module: latent2var
+      input: latent_base
+      output: var
+
+    - module: vae
+      input: {mu: mu, var: var}
+      output: latent
+
+    - module: latent2dec
+      input: latent
+      output: dec_latent
+
+    - module: dec_embedding
+      input: dec_input
+
+    - module: decoder
+      mode: forced
+      input: {latent: dec_latent, tgt: dec_input}
+      output: dec_output
+
+    - module: dec2proba
+      input: dec_output
+
+    - module: sequencece
+      input: [dec_output, dec_target]
+      output: sequencece
+
+    - module: -d_kl
+      input: [mu, var]
+      output: -d_kl
+
+    - module: -d_kl_factor
+      input: -d_kl
 
   val_loop:
-    - op: "forward"
-      inputs: ["src", "tgt"]
-      outputs: ["logits"]
-    - op: "metrics"
-      inputs: ["logits", "tgt"]
-    - op: "accumulate"
-      inputs: ["z", "mu", "var", "logits", "tgt"]
+    - module: teacherforcer
+      input: target
+      output: [dec_input, dec_target, dec_target_len]
+      return_len: true
 
-  loss_names: ["loss"]
+    - module: masker
+      input: input
+      output: input_padding_mask
+
+    - module: enc_embedding
+      input: input
+
+    - module: encoder
+      input: [input, input_padding_mask]
+      output: memory
+
+    - type: function
+      function: {type: transpose, dim0: 0, dim1: 1}
+      input: input_padding_mask
+      output: input_padding_mask2
+
+    - module: pooler
+      input: [memory, input_padding_mask2]
+      output: latent_base
+
+    - module: latent2mu
+      input: latent_base
+      output: mu
+
+    - module: latent2var
+      input: latent_base
+      output: var
+
+    - module: vae
+      input: {mu: mu, var: var}
+      output: latent
+
+    - module: latent2dec
+      input: latent
+      output: dec_latent
+
+    # 教師強制での出力（partial_teacher / perfect 用）
+    - module: dec_embedding
+      input: dec_input
+    - module: decoder
+      mode: forced
+      input: {latent: dec_latent, tgt: dec_input}
+      output: dec_output
+    - module: dec2proba
+      input: dec_output
+    - module: sequencece
+      input: [dec_output, dec_target]
+      output: sequencece
+    - module: dec_supporter
+      mode: force
+      input: dec_output
+      output: forced
+
+    # greedy 生成準備
+    - module: decoder
+      mode: prepare_cell_forward
+      input: {latent: dec_latent}
+      output: state
+    - module: dec_supporter
+      mode: init
+      input: {batch_size: batch_size}
+      output: [cur_input, greedy]
+
+    # greedy 生成ループ
+    - type: iterate
+      length: dec_target_len
+      processes:
+        - module: dec_embedding
+          input: {input: cur_input, position: iterate_i}
+          output: cur_input
+        - module: decoder
+          mode: cell_forward
+          input: {tgt: cur_input, latent: dec_latent, state: state, position: iterate_i}
+          output: [cur_output, state]
+        - module: dec2proba
+          input: cur_output
+        - module: dec_supporter
+          mode: add
+          input: {cur_proba: cur_output, outs: greedy}
+          output: [cur_input, greedy]
+
+    - module: dec_supporter
+      mode: aggregate
+      input: greedy
+      output: greedy
+
+  loss_names: ["sequencece", "-d_kl"]
   val_loop_add_train: false
   abortion: { step: null, epoch: null, time: null }
   rstate: {}
