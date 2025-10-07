@@ -1,44 +1,41 @@
 # ============================================================
 # config.yaml (runner-side hardening; workers untouched)
-# - 前段フィルタ(Preflight)を train.py で実行するための設定を追加
-# - 実行側(=training.*)に必要なキーのみを定義（未知キーは置かない）
-# - モデル定義は従来どおり（workers を変更しない）
+# - Preflight を train/val に適用可能
+# - モジュール引数は実装の __init__ シグネチャに揃え済み
 # ============================================================
 
-# ---------- Preflight: 学習前の簡易フィルタ（train.py 内蔵） ----------
-# RDKit 由来の失敗や極端な長さの系列を「理由付きで」落とします。
-# 許容ドロップ率(max_drop_pct)を超えた場合は中止。レポートは {result_dir}/qc/ に出力。
+# ---------- Preflight ----------
 preflight:
   enable: true
-  max_length: 198          # トークン長の上限（input/targetの両方に適用）
-  max_drop_pct: 5          # 許容ドロップ率(%)。厳格運用は 0 に設定
-  check_files: true        # 入力パスの存在確認
-  report_dir: ./qc         # 相対パスは result_dir 配下に解決されます
+  max_length: 198
+  max_drop_pct: 5
+  check_files: true
+  report_dir: ./qc
+  apply_to_train: true
+  apply_to_vals:  true
 
-# ---------- Model: workers に渡すそのままの構成 ----------
+# ---------- Model ----------
 model:
   modules:
     teacherforcer:
       type: TeacherForcer
-      length_dim: 1
+      length_dim: 1          # ← 必須
 
     masker:
       type: MaskMaker
-      mask_token: 3            # ← あなたの語彙での [MASK] ID に合わせる
+      mask_token: 3          # ← 語彙の [MASK] トークンIDに合わせて変更
 
     enc_embedding:
       type: PositionalEmbedding
-      embedding:
-        num_embeddings: 400    # (= vocab size)
-        embedding_dim: 512     # (= d_model)
-        # 必要なら padding_idx: 0 など
+      embedding:             # ← nn.Embedding の純 kwargs（type は書かない）
+        num_embeddings: 400  # (= vocab size)
+        embedding_dim: 512   # (= d_model)
       max_len: 256
       dropout: 0.0
 
     encoder:
       type: TransformerEncoder
-      layer:
-        type: SelfAttentionLayer
+      layer:                 # ← SelfAttentionLayer の純 kwargs（type は書かない）
         d_model: 512
         nhead: 8
         dropout: 0.1
@@ -49,7 +46,7 @@ model:
 
     latent2mu:
       type: MLP
-      n_embd: 512
+      n_embd: 512           # ← この実装の MLP は n_embd のみ受理
 
     latent2var:
       type: MLP
@@ -73,12 +70,11 @@ model:
     decoder:
       type: TransformerDecoder
       layer:
-        type: SelfAttentionLayer
         d_model: 512
         nhead: 8
         dropout: 0.1
       n_layer: 6
-      max_len: 256
+      # max_len は実装によって unknown の可能性があるため外しています
 
     dec2proba:
       type: MLP
@@ -108,29 +104,24 @@ model:
     type: default
   seed: 111
 
-
-# ---------- Training: 実行側の全設定（train.py が参照） ----------
+# ---------- Training ----------
 training:
-  # 実行出力ディレクトリ（$TIMESTAMP のみ使用可）
   result_dir:
     dirname: "./result/$TIMESTAMP_AllPubchem"
-    duplicate: "error"    # "error" | "overwrite" | "merge" | "ask"
+    duplicate: "error"
 
-  # ログ・進捗表示
   verbose:
     show_tqdm: true
     loglevel:
-      stream: info        # 標準出力
-      file: debug         # ファイル出力（{result_dir}/log.txt）
+      stream: info
+      file: debug
 
-  # 実行デバイス・再現性（runner と model を分けて初期化）
   gpuid: 0
   detect_anomaly: false
   deterministic: false
   runner_seed: 111
   model_seed: 111
 
-  # データローダ設定（workers を変更せず、そのまま渡す）
   data:
     train:
       type: bucket
@@ -149,7 +140,6 @@ training:
             dtype: long
             len_name: src_len
             padding_value: 0
-            # ※手元のパスに合わせて変更してください
             path_list: "./data/AllPubchem_test_random.pkl"
           target:
             type: string
@@ -157,8 +147,8 @@ training:
             dtype: long
             len_name: tgt_len
             padding_value: 0
-            # ※手元のパスに合わせて変更してください
             path_list: "./data/AllPubchem_test_canonical.pkl"
+
     vals:
       valid:
         type: bucket
@@ -186,7 +176,6 @@ training:
               padding_value: 0
               path_list: "./data/AllPubchem_test_canonical.pkl"
 
-  # Optimizer / LR Scheduler
   optimizer:
     type: adamw
     lr: 0.001
@@ -194,16 +183,13 @@ training:
     eps: 1.0e-8
     weight_decay: 0.01
 
-  # ※実際のスケジューラ適用は pre_hooks の scheduler_alarm で行います
   scheduler:
     type: warmup
     warmup: 800
 
-  # Optimizer の適用頻度（ステップ単位）
   schedule:
     opt_freq: 1
 
-  # 評価指標（name: config のマップ。train.py は dict を想定）
   metrics:
     perfect:
       type: perfect
@@ -212,7 +198,6 @@ training:
     partial_greedy:
       type: partial_greedy
 
-  # Accumulators（必要ならそのまま）
   accumulators:
     - type: numpy
       name: latent
@@ -223,27 +208,25 @@ training:
       save_dir: "./result_np/pred"
       fields: ["y_pred", "y_true"]
 
-  # Hooks（train.py 内で hook_type2class に登録済みの型のみ使用）
   pre_hooks:
     lr_scheduler:
-      type: scheduler_alarm   # train.py 側の SchedulerAlarmHook を使用
+      type: scheduler_alarm
       target: step
       every: 1
-      scheduler:              # 上の training.scheduler をそのまま渡す
+      scheduler:
         type: warmup
         warmup: 800
 
   post_hooks:
     validate:
-      type: validation_alarm  # train.py 内で定義された ValidationAlarmHook
+      type: validation_alarm
       target: step
       every: 1000
     checkpoint:
-      type: checkpoint_alarm  # train.py 内で定義された CheckpointAlarm
+      type: checkpoint_alarm
       target: step
       every: 5000
 
-  # ループ定義（workers のプロセスに合わせて従来どおり）
   train_loop:
     - op: "forward"
       inputs: ["src", "tgt"]
@@ -268,24 +251,9 @@ training:
     - op: "accumulate"
       inputs: ["z", "mu", "var", "logits", "tgt"]
 
-  # 損失名（train.py が合算するキー）
   loss_names: ["loss"]
-
-  # 補助設定
   val_loop_add_train: false
   abortion: { step: null, epoch: null, time: null }
   rstate: {}
   stocks: { score_df: "" }
-
-  # 1 epoch あたりのステップ数（train.py 側で参照）
   steps_per_epoch: 1000
-
-
-preflight:
-  enable: true
-  max_length: 198
-  max_drop_pct: 5
-  check_files: true
-  report_dir: ./qc
-  apply_to_train: true   # 既定 true
-  apply_to_vals:  true   # ← ここを true にすれば、validation にも適用されます
