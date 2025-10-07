@@ -120,23 +120,29 @@ class SelfAttentionLayer(nn.Module):
         """
         x = src
         if self.norm_first:
-            x1, weight = self._sa_block(self.norm1(x), src_mask, src_key_padding_mask, need_weights)
+            x1, weight = self._sa_block(self.norm1(x), src_mask, src_key_padding_mask, need_weights=need_weights)
             x = x + x1
             x = x + self._ff_block(self.norm2(x))
         else:
-            x1, weight = self._sa_block(x, src_mask, src_key_padding_mask)
+            x1, weight = self._sa_block(x, src_mask, src_key_padding_mask, need_weights=need_weights)
             x = self.norm1(x + x1)
             x = self.norm2(x + self._ff_block(x))
         if need_weights:
             return x, weight
         else:
             return x
-    def _sa_block(self, x, attn_mask, key_padding_mask, need_weights):
-        x, weights = self.self_attn(x, x, x,
-                           attn_mask=attn_mask,
-                           key_padding_mask=key_padding_mask,
-                           need_weights=need_weights)
-        return self.dropout1(x), weights
+
+    def _sa_block(self, x, attn_mask, key_padding_mask, need_weights: bool = False):
+        # nn.MultiheadAttention forward signature in PyTorch 2.x supports need_weights & average_attn_weights
+        out, weights = self.self_attn(
+            x, x, x,
+            attn_mask=attn_mask,
+            key_padding_mask=key_padding_mask,
+            need_weights=need_weights,
+            average_attn_weights=False,
+        )
+        return self.dropout1(out), weights
+
     def _ff_block(self, x):
         x = self.linear2(self.dropout(self.activation(self.linear1(x))))
         return self.dropout2(x)
@@ -559,7 +565,8 @@ class AttentionDecoder(LatentSequenceDecoder):
 
         # decoder
         decoder_layer = SelfAttentionLayer_old(**layer)
-        self.decoder = nn.TransformerEncoder(encoder_layer=decoder_layer, num_layers=num_layers)
+        # NOTE: disable nested tensor optimization to avoid PyTorch warning; no change in semantics
+        self.decoder = nn.TransformerEncoder(encoder_layer=decoder_layer, num_layers=num_layers, enable_nested_tensor=False)
         
         # weight init
         for layer in self.decoder.layers:
@@ -657,7 +664,6 @@ class TransformerLMDecoder(LatentSequenceDecoder):
         layer: dict
             input for SelfAttentionLayer
         num_layers: int
-        init: dict
             Initialization for each parameter
         max_len: int
         load_square_mask: いる?
@@ -670,7 +676,8 @@ class TransformerLMDecoder(LatentSequenceDecoder):
 
         # decoder
         decoder_layer = SelfAttentionLayer_old(**layer)
-        self.decoder = nn.TransformerEncoder(encoder_layer=decoder_layer, num_layers=num_layers)
+        # NOTE: disable nested tensor optimization to avoid PyTorch warning; no change in semantics
+        self.decoder = nn.TransformerEncoder(encoder_layer=decoder_layer, num_layers=num_layers, enable_nested_tensor=False)
 
         # weight init
         for layer in self.decoder.layers:
@@ -895,4 +902,3 @@ class GreedyDecoder(nn.Module):
             force = torch.cat([torch.full((batch_size, 1), fill_value=self.start_token),
                 force])
         return force
-
