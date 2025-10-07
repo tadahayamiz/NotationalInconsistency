@@ -1,5 +1,5 @@
 # ============================================================
-# config.yaml (runner-side hardening; workers untouched)
+# config.yaml (strict; voc.py準拠: <pad>=0, <start>=1, <end>=2)
 # ============================================================
 
 # ---------- Preflight (runner gate; architecture-neutral) ----------
@@ -14,6 +14,12 @@ preflight:
 
 # ---------- Model (Back to the original architecture) ----------
 model:
+  # voc.py に合わせた特別トークン（単一情報源）
+  special_tokens:
+    padding_idx: 0
+    start_idx: 1
+    end_idx: 2
+
   modules:
     teacherforcer:
       type: TeacherForcer
@@ -28,9 +34,9 @@ model:
     enc_embedding:
       type: PositionalEmbedding
       embedding:
-        num_embeddings: 1123
+        num_embeddings: 1123          # ← large_vocs.csv + 3（必要に応じて調整）
         embedding_dim: 512
-        padding_idx: 0
+        padding_idx: 0                # ← <pad>=0 を明示
       dropout: 0.0
       max_len: 250
 
@@ -95,7 +101,7 @@ model:
       embedding:
         num_embeddings: 129
         embedding_dim: 512
-        padding_idx: 0
+        padding_idx: 0                # ← <pad>=0 を明示
       dropout: 0.0
       max_len: 250
 
@@ -108,7 +114,7 @@ model:
         dropout: 0.0
         layer_norm_eps: 1.0e-09
         activation: newgelu
-        d_ff_factor: 4           # or dim_feedforward: 2048 (one of them)
+        d_ff_factor: 4
       num_layers: 8
       init:
         self_attn.in_proj_weight: glorot_uniform
@@ -132,12 +138,13 @@ model:
 
     dec_supporter:
       type: GreedyDecoder
-      start_token: 1
+      start_token: 1                  # ← voc.py 準拠
+      end_token: 2                    # ← 追加（警告抑止 & 停止条件の統一）
 
     sequencece:
       type: CrossEntropyLoss
       reduction: sum
-      ignore_index: 0
+      ignore_index: 0                 # ← <pad>=0 を損失から除外
 
     -d_kl:
       type: MinusD_KLLoss
@@ -148,15 +155,14 @@ model:
 
     transpose_mask:
       type: Tunnel
-      input_size: [max_len, batch_size]      # もともとの mask 形状 [T,B] を想定
+      input_size: [max_len, batch_size]
       layers:
         - type: function
           function:
             type: transpose
             dim0: 0
-            dim1: 1                           # => [B, T] へ転置
+            dim1: 1                 # => [B, T] へ転置
 
-  # （use_modules は明示不要ですが、残しても実害はありません）
   use_modules:
     - teacherforcer
     - masker
@@ -302,7 +308,7 @@ training:
     lr_scheduler:
       type: scheduler_alarm
       alarm:
-        type: count     # ← 1ステップごとに発火
+        type: count
         target: step
         step: 1
         start: 0
@@ -314,19 +320,18 @@ training:
     validate:
       type: validation_alarm
       alarm:
-        type: count     # ← 1000ステップごとに検証
+        type: count
         target: step
         step: 1000
-      # end: true  # 使わないなら省略可
 
     checkpoint:
       type: checkpoint_alarm
       alarm:
-        type: count     # ← 5000ステップごとに保存
+        type: count
         target: step
         step: 5000
 
-  # === Loops: 元の流れに戻す（prepare_cell_forward / force を復元） ===
+  # === Loops: 元の流れ（prepare_cell_forward / force を復元） ===
   train_loop:
     - module: teacherforcer
       input: target
@@ -402,9 +407,10 @@ training:
 
     - module: enc_embedding
       input: input
+      output: input_emb                # ← 追加
 
     - module: encoder
-      input: [input, input_padding_mask]
+      input: [input_emb, input_padding_mask]   # ← 修正（train と統一）
       output: memory
 
     - module: transpose_mask

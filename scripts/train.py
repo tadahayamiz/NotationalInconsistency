@@ -252,6 +252,30 @@ def run_preflight_and_rewrite_paths(cfg: Dict, result_dir: str, logger):
     return cfg
 
 
+# --- add: strict validator (voc.py contract: <pad>=0, <start>=1, <end>=2) ---
+def strict_validate_special_tokens(cfg):
+    st = cfg.model.get("special_tokens", {})
+    def need(k, v):
+        if int(st.get(k, -999)) != v:
+            raise RuntimeError(f"[strict] model.special_tokens.{k} must be {v} (voc.py contract)")
+    need("padding_idx", 0)
+    need("start_idx",   1)
+    need("end_idx",     2)
+
+    # embeddings must match padding_idx=0
+    emb = cfg.model["modules"]["enc_embedding"]["embedding"]
+    if int(emb.get("padding_idx", -1)) != 0:
+        raise RuntimeError("[strict] enc_embedding.embedding.padding_idx must be 0")
+    demb = cfg.model["modules"]["dec_embedding"]["embedding"]
+    if int(demb.get("padding_idx", -1)) != 0:
+        raise RuntimeError("[strict] dec_embedding.embedding.padding_idx must be 0")
+
+    # GreedyDecoder 側も end_token=2 を要求（config で明示済みのはず）
+    decsup = cfg.model["modules"]["dec_supporter"]
+    if int(decsup.get("end_token", -1)) != 2:
+        raise RuntimeError("[strict] dec_supporter.end_token must be 2")
+
+
 # ====== random state I/O (kept) ======
 def save_rstate(dirname):
     os.makedirs(dirname, exist_ok=True)
@@ -327,6 +351,9 @@ hook_type2class['notice_alarm'] = NoticeAlarmHook
 
 
 def main(config, args=None):
+    # strict: voc.py の契約と一致しているか検証
+    strict_validate_special_tokens(config)
+
     # substitute variables (kept)
     config = subs_vars(config, {"$TIMESTAMP": timestamp()})
     trconfig = config.training
@@ -351,16 +378,15 @@ def main(config, args=None):
         logger.error(str(e))
         raise
 
-    # helper for epoch-wise dataloader rewrite (kept; path pattern update)
+    # helper for epoch-wise dataloader rewrite (strict: ファイル存在必須)
     def update_dataloader_for_epoch(epoch, config):
-        new_path = f"./data/Pubchem_chunk_pro_{epoch}_ran.pkl"
-        new_path2 = f"./data/Pubchem_chunk_pro_{epoch}_can.pkl"
+        new_ran = f"./data/Pubchem_chunk_pro_{epoch}_ran.pkl"
+        new_can = f"./data/Pubchem_chunk_pro_{epoch}_can.pkl"
+        if not (_file_exists(new_ran) and _file_exists(new_can)):
+            raise SystemExit(f"[strict] epoch {epoch}: missing data files: {new_ran} / {new_can}")
         updated_config = config.copy()
-        try:
-            updated_config['training']['data']['train']['datasets']['datasets']['input']['path_list'] = new_path
-            updated_config['training']['data']['train']['datasets']['datasets']['target']['path_list'] = new_path2
-        except Exception:
-            pass
+        _dset(updated_config, "training.data.train.datasets.datasets.input.path_list", new_ran)
+        _dset(updated_config, "training.data.train.datasets.datasets.target.path_list", new_can)
         return get_dataloader(logger=logger, device=DEVICE, **updated_config.training.data.train)
 
     # environment
@@ -522,6 +548,7 @@ def main(config, args=None):
         def __init__(self, scheduler, logger=None, **kwargs):
             alarm, kwargs = _normalize_alarm_kwargs(kwargs)
             super().__init__(logger=logger, alarm=alarm, **kwargs)
+            # warmup 等で last_epoch を持つ実装には、現ステップに同期
             scheduler.setdefault('last_epoch', dl_train.step - 1)
             self.scheduler = get_scheduler(optimizer, **scheduler)
 
@@ -639,6 +666,12 @@ def main(config, args=None):
                 batch_dict.update(out)
         return batch_dict
 
+    # regularize_loss のデフォルト（config に無い場合に備える）
+    _reg = getattr(trconfig, 'regularize_loss', Dict())
+    _reg.normalize = bool(getattr(_reg, 'normalize', False))
+    _reg.clip_grad_norm = float(getattr(_reg, 'clip_grad_norm', 0.0) or 0.0)
+    _reg.clip_grad_value = float(getattr(_reg, 'clip_grad_value', 0.0) or 0.0)
+
     # training
     training_start = time.time()
     logger.info("Training started.")
@@ -669,8 +702,10 @@ def main(config, args=None):
             _run_processes(model, batch, train_processes)
 
             loss = sum(batch[loss_name] for loss_name in trconfig.loss_names)
-            if trconfig.regularize_loss.normalize:
-                loss = loss / loss.detach()
+            if _reg.normalize:
+                # 注意: 正規化の意味が曖昧なので、zero division を避けるだけの安全策
+                denom = float(loss.detach().abs().item()) or 1.0
+                loss = loss / denom
             try:
                 loss.backward()
             except Exception as e:
@@ -684,7 +719,7 @@ def main(config, args=None):
                 model.save_state_dict(f"{result_dir}/error/model")
                 raise e
 
-            # epoch-wise dataloader update (kept behavior)
+            # epoch-wise dataloader update (strict file check)
             if dl_train.step % steps_per_epoch == 0:
                 epoch += 1
                 del dl_train
@@ -707,16 +742,22 @@ def main(config, args=None):
             batch['grad_max'] = grad_max
             batch['grad_min'] = grad_min
 
-            if trconfig.regularize_loss.clip_grad_norm:
-                torch.nn.utils.clip_grad_norm_(model.parameters(),
-                    max_norm=trconfig.regularize_loss.clip_grad_norm, error_if_nonfinite=True)
-            if trconfig.regularize_loss.clip_grad_value:
-                torch.nn.utils.clip_grad_value_(model.parameters(),
-                    clip_value=trconfig.regularize_loss.clip_grad_value)
+            if _reg.clip_grad_norm:
+                torch.nn.utils.clip_grad_norm_(
+                    model.parameters(),
+                    max_norm=_reg.clip_grad_norm,
+                    error_if_nonfinite=True
+                )
+            if _reg.clip_grad_value:
+                torch.nn.utils.clip_grad_value_(
+                    model.parameters(),
+                    clip_value=_reg.clip_grad_value
+                )
 
+            # optimizer -> scheduler の順序を保証
             if dl_train.step % trconfig.schedule.opt_freq == 0:
                 optimizer.step()
-                optimizer.zero_grad()
+                optimizer.zero_grad(set_to_none=True)
                 batch['opt_stepped'] = True
             else:
                 batch['opt_stepped'] = False

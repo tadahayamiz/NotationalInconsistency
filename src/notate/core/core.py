@@ -145,24 +145,23 @@ class Model(nn.Module):
         )
 
 
+    # --- add: dict-like access for processes (required by Process.get_callable) ---
     def __getitem__(self, key: str):
-        # components に登録されているモジュール名を最優先
+        # prefer registered components (ModuleDict) if present
         if hasattr(self, "components") and key in self.components:
             return self.components[key]
-        # 念のため属性にもフォールバック（例: self.encoder など）
+        # fall back to attribute
         if hasattr(self, key):
             return getattr(self, key)
-        raise KeyError(f"Model has no submodule/attr named '{key}'")
+        raise KeyError(f"Model has no submodule/attr '{key}'")
 
-
-    # --- add: safe checkpoint helper on Model ---
+    # --- add: checkpoint helper called by checkpoint hook ---
     def save_state_dict(self, out_prefix: str):
-        """Save model weights to <out_prefix>.pt (parents auto-created)."""
         import torch
         from pathlib import Path
-        out_path = Path(f"{out_prefix}.pt")
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        torch.save(self.state_dict(), out_path)
+        p = Path(f"{out_prefix}.pt")
+        p.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(self.state_dict(), p)
 
 
 
