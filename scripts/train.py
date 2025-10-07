@@ -491,10 +491,7 @@ def main(config, args=None):
             raise SystemExit("[CONFIG ERROR] Module kwargs mismatch. See kwargs_validation.txt for details.\n"
                             + "\n".join(errs[:3]))
 
-    try:
-        model_cfg = config.model.to_dict()
-    except Exception:
-        model_cfg = yaml.safe_load(yaml.dump(config.model))
+    model_cfg = config.model
 
     # --- 呼び出し（Option A の model_cfg を作った直後に） ---
     validate_model_module_kwargs(model_cfg, result_dir, logger, policy="strict")  # ← "drop" にすれば未知キーを自動削除
