@@ -102,11 +102,11 @@ def run_preflight_and_rewrite_paths(cfg: Dict, result_dir: str, logger):
       preflight:
         enable: true
         max_length: 198
-        max_drop_pct: 5.0          # %（各 split に個別適用）
+        max_drop_pct: 5.0
         check_files: true
-        report_dir: "./qc"         # 相対は result_dir 配下に解決
-        apply_to_train: true       # train に適用
-        apply_to_vals:  false      # validation にも適用（true で有効）
+        report_dir: "./qc"
+        apply_to_train: true
+        apply_to_vals:  false
     """
     pf = cfg.get('preflight', None)
     if not pf or not pf.get('enable', False):
@@ -119,24 +119,17 @@ def run_preflight_and_rewrite_paths(cfg: Dict, result_dir: str, logger):
     apply_train   = bool(pf.get('apply_to_train', True))
     apply_vals    = bool(pf.get('apply_to_vals', False))
 
-    # resolve report dir
     report_dir = pf.get('report_dir', os.path.join(result_dir, "qc"))
     if not os.path.isabs(report_dir):
         report_dir = os.path.join(result_dir, os.path.normpath(report_dir))
     os.makedirs(report_dir, exist_ok=True)
 
-    # ---- 内部 helper: 1 split を preflight して config を書き換え ----
     def _apply_to_split(base_key: str, split_label: str):
-        """
-        base_key 例:
-          - train: 'training.data.train.datasets.datasets'
-          - valX : 'training.data.vals.<name>.datasets.datasets'
-        """
         in_paths = _dget(cfg, f"{base_key}.input.path_list")
         tgt_paths = _dget(cfg, f"{base_key}.target.path_list")
         if in_paths is None or tgt_paths is None:
             logger.warning(f"[preflight] {split_label}: path_list not found. Skipped.")
-            return None  # nothing to do
+            return None
 
         in_paths = _ensure_list(in_paths)
         tgt_paths = _ensure_list(tgt_paths)
@@ -172,7 +165,6 @@ def run_preflight_and_rewrite_paths(cfg: Dict, result_dir: str, logger):
                     li = len(arr_in[k])
                     lt = len(arr_tg[k])
                 except Exception:
-                    # malformed item -> drop
                     continue
                 ok = (li <= max_len) and (lt <= max_len) and (li > 0) and (lt > 0)
                 if ok:
@@ -193,9 +185,7 @@ def run_preflight_and_rewrite_paths(cfg: Dict, result_dir: str, logger):
 
             logger.info(f"[preflight] {split_label}: {base_in}/{base_tg}: {L} -> {len(keep_idx)} kept (max_len={max_len})")
 
-        # split 単位の drop 判定
         drop_pct = (100.0 * total_dropped / max(1, total_before))
-        # split summary
         summary = {
             "split": split_label,
             "total_before": int(total_before),
@@ -205,7 +195,6 @@ def run_preflight_and_rewrite_paths(cfg: Dict, result_dir: str, logger):
             "max_len":      int(max_len),
             "allowed_max_drop_pct": float(max_drop_pct),
         }
-        # 保存（split 名付き）
         _save_pickle(summary, os.path.join(report_dir, f"preflight_summary_{split_label}.pkl"))
         with open(os.path.join(report_dir, f"preflight_summary_{split_label}.txt"), "w", encoding="utf-8") as f:
             for k, v in summary.items():
@@ -216,7 +205,6 @@ def run_preflight_and_rewrite_paths(cfg: Dict, result_dir: str, logger):
         if drop_pct > max_drop_pct:
             raise SystemExit(f"[preflight] {split_label}: drop {drop_pct:.2f}% > allowed {max_drop_pct:.2f}%")
 
-        # config の書き換え
         _dset(cfg, f"{base_key}.input.path_list",
               cleaned_in_paths if len(cleaned_in_paths) > 1 else cleaned_in_paths[0])
         _dset(cfg, f"{base_key}.target.path_list",
@@ -225,9 +213,7 @@ def run_preflight_and_rewrite_paths(cfg: Dict, result_dir: str, logger):
         logger.info(f"[preflight] {split_label}: kept={total_after} / {total_before} (drop={drop_pct:.2f}%)")
         return summary
 
-    # ---- 適用先 split を組み立てて実行 ----
     all_summaries = []
-
     if apply_train:
         base_key = "training.data.train.datasets.datasets"
         s = _apply_to_split(base_key, "train")
@@ -245,7 +231,6 @@ def run_preflight_and_rewrite_paths(cfg: Dict, result_dir: str, logger):
         else:
             logger.warning("[preflight] apply_to_vals=True だが validation 設定が見つかりませんでした。")
 
-    # ---- 全体サマリ（任意） ----
     if len(all_summaries) > 0:
         total_before = sum(s["total_before"] for s in all_summaries)
         total_after  = sum(s["total_after"]  for s in all_summaries)
@@ -368,7 +353,6 @@ def main(config, args=None):
 
     # helper for epoch-wise dataloader rewrite (kept; path pattern update)
     def update_dataloader_for_epoch(epoch, config):
-        # NOTE: original behavior for PubChem chunk rotation (kept)
         new_path = f"./data/Pubchem_chunk_pro_{epoch}_ran.pkl"
         new_path2 = f"./data/Pubchem_chunk_pro_{epoch}_can.pkl"
         updated_config = config.copy()
@@ -405,7 +389,6 @@ def main(config, args=None):
         if torch.cuda.is_available():
             torch.cuda.manual_seed(trconfig.model_seed)
 
-    # basic presence check
     if not isinstance(config.get('model', None), Dict):
         raise SystemExit("[CONFIG ERROR] top-level `model` section is missing in your config.")
 
@@ -421,7 +404,6 @@ def main(config, args=None):
         raise SystemExit("[CONFIG ERROR] `model.modules` must be a non-empty mapping. "
                          f"Dumped model section to: {dump_path}")
 
-    # ---- sanitize use_modules / omit_modules so that selection is non-empty ----
     mod_keys = list(mods.keys())
     use = config.model.get('use_modules', None)
     omit = config.model.get('omit_modules', None)
@@ -540,7 +522,6 @@ def main(config, args=None):
         def __init__(self, scheduler, logger=None, **kwargs):
             alarm, kwargs = _normalize_alarm_kwargs(kwargs)
             super().__init__(logger=logger, alarm=alarm, **kwargs)
-            # keep original behavior
             scheduler.setdefault('last_epoch', dl_train.step - 1)
             self.scheduler = get_scheduler(optimizer, **scheduler)
 
@@ -568,7 +549,8 @@ def main(config, args=None):
                     for metric in metrics:
                         metric.set_val_name(key)
                     for batch0 in dl:
-                        batch0 = model(batch0, processes=val_processes)
+                        # ---- run processes (strict Model.forward) ----
+                        _run_processes(model, batch0, val_processes)
                         for x in metrics + accumulators + [idx_accumulator]:
                             x(batch0)
                         del batch0
@@ -645,6 +627,16 @@ def main(config, args=None):
     # load random state
     set_rstate(getattr(trconfig, 'rstate', Dict()))
 
+    # ====== helper: run processes (strict Model.forward) ======
+    def _run_processes(model_obj: Model, batch_dict: dict, processes):
+        """Execute process graph explicitly, since Model.forward is strict."""
+        for proc in processes:
+            out = proc(model_obj, batch_dict)
+            # processes typically mutate batch in-place; accept optional dict returns
+            if isinstance(out, dict) and out is not batch_dict:
+                batch_dict.update(out)
+        return batch_dict
+
     # training
     training_start = time.time()
     logger.info("Training started.")
@@ -671,7 +663,9 @@ def main(config, args=None):
             # training step
             batch = dl_train.get_batch(batch)
             start = time.time()
-            batch = model(batch, processes=train_processes)
+            # ---- run processes (strict Model.forward) ----
+            _run_processes(model, batch, train_processes)
+
             loss = sum(batch[loss_name] for loss_name in trconfig.loss_names)
             if trconfig.regularize_loss.normalize:
                 loss = loss / loss.detach()
