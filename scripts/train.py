@@ -361,7 +361,9 @@ def main(config, args=None):
     dls_val = {name: get_dataloader(logger=logger, device=DEVICE, **dl_val_config)
                for name, dl_val_config in trconfig.data.vals.items()}
 
-    # prepare model (strict config check)
+    # --------------------------
+    # prepare model (strict config check + sanitize)
+    # --------------------------
     if 'model_seed' in trconfig:
         random.seed(trconfig.model_seed)
         np.random.seed(trconfig.model_seed)
@@ -369,13 +371,12 @@ def main(config, args=None):
         if torch.cuda.is_available():
             torch.cuda.manual_seed(trconfig.model_seed)
 
-    # ---- strict check for model config ----
+    # basic presence check
     if not isinstance(config.get('model', None), Dict):
         raise SystemExit("[CONFIG ERROR] top-level `model` section is missing in your config.")
 
     mods = config.model.get('modules', None)
     if not isinstance(mods, (dict, Dict)) or len(mods) == 0:
-        # dump the section for quick debugging
         dump_path = os.path.join(result_dir, "model_section_dump.yaml")
         try:
             with open(dump_path, "w", encoding="utf-8") as f:
@@ -386,7 +387,70 @@ def main(config, args=None):
         raise SystemExit("[CONFIG ERROR] `model.modules` must be a non-empty mapping. "
                          f"Dumped model section to: {dump_path}")
 
-    # NOTE: 現行の notate.core.core.Model は `config` を必須引数に取ります
+    # ---- sanitize use_modules / omit_modules so that selection is non-empty ----
+    # exact keys present in model.modules
+    mod_keys = list(mods.keys())
+
+    # normalize lists
+    use = config.model.get('use_modules', None)
+    omit = config.model.get('omit_modules', None)
+    if use is not None and not isinstance(use, (list, tuple)):
+        use = [use]
+    if omit is not None and not isinstance(omit, (list, tuple)):
+        omit = [omit]
+
+    # drop unknown names from use_modules (warn)
+    if use is not None:
+        unknown_use = [m for m in use if m not in mod_keys]
+        if len(unknown_use) > 0:
+            logger.warning(f"[config] unknown names in model.use_modules -> dropped: {unknown_use}")
+            use = [m for m in use if m in mod_keys]
+            config.model.use_modules = use  # write-back
+
+        # if all were unknown and filtered out, fall back to "use all"
+        if len(use) == 0:
+            logger.warning("[config] model.use_modules became empty after filtering; falling back to ALL modules.")
+            try:
+                config.model.pop('use_modules')
+            except Exception:
+                try:
+                    del config.model['use_modules']
+                except Exception:
+                    config.model.use_modules = None
+            use = None  # treat as "use all"
+
+    # drop unknown names from omit_modules (warn)
+    if omit is not None:
+        unknown_omit = [m for m in omit if m not in mod_keys]
+        if len(unknown_omit) > 0:
+            logger.warning(f"[config] unknown names in model.omit_modules -> dropped: {unknown_omit}")
+            omit = [m for m in omit if m in mod_keys]
+            config.model.omit_modules = omit  # write-back
+
+    # compute the actually-selected module names
+    selected = []
+    for k in mod_keys:
+        if use is not None and k not in use:
+            continue
+        if omit is not None and k in omit:
+            continue
+        selected.append(k)
+
+    # if selection is empty, fail early with a helpful dump
+    if len(selected) == 0:
+        dump_path = os.path.join(result_dir, "model_modules_filter_dump.yaml")
+        with open(dump_path, "w", encoding="utf-8") as f:
+            yaml.dump({
+                "all_module_keys": mod_keys,
+                "use_modules": use,
+                "omit_modules": omit
+            }, f, sort_keys=False, allow_unicode=True)
+        raise SystemExit("[CONFIG ERROR] No modules remain after applying use_modules/omit_modules. "
+                         f"Check names. Dumped filter info to: {dump_path}")
+
+    logger.info(f"[model] modules: {len(mod_keys)} defined; selected -> {len(selected)} : {selected[:8]}{'...' if len(selected)>8 else ''}")
+
+    # ---- build model (NOTE: current notate.core.core.Model requires `config`) ----
     model = Model(config=config, logger=logger, **config.model)
 
     if getattr(trconfig, 'init_weight', None):
@@ -395,6 +459,7 @@ def main(config, args=None):
     optimizer = get_optimizer(params=model.parameters(), **trconfig.optimizer)
     if getattr(trconfig, 'optimizer_init_weight', None):
         optimizer.load_state_dict(torch.load(trconfig.optimizer_init_weight))
+
 
     train_processes = [get_process(**process) for process in trconfig.train_loop]
 
