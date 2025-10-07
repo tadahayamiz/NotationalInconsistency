@@ -55,3 +55,31 @@ __all__ = [
     'MeanStartEndMaxPooler', 'MeanStdStartEndMaxMinPooler', 'NoAffinePooler',
     'NemotoPooler', 'GraphPooler',
 ]
+
+
+# --- Minimal Affine for scalar/tensor-safe scaling (keeps original config) ---
+import torch
+import torch.nn as nn
+from ..core.core import module_type2class
+
+class Affine(nn.Module):
+    """
+    y = x * weight + bias
+    - weight, bias: Python float でも可（dtype/device は x に自動追従）
+    - 任意形状の x に対して PyTorch のブロードキャストで安全に適用
+    - 学習対象でない定数変換として使用（論文設定の -d_kl_factor 等）
+    """
+    def __init__(self, weight: float = 1.0, bias: float = 0.0):
+        super().__init__()
+        # 学習させない前提なので Parameter 化せず float のまま保持
+        self.weight = float(weight)
+        self.bias = float(bias)
+
+    def forward(self, x):
+        return x * self.weight + self.bias
+
+# register
+module_type2class['Affine'] = Affine
+__all__.extend([
+    'Affine',
+])
