@@ -504,16 +504,7 @@ def main(config, args=None):
         raise SystemExit("[CONFIG ERROR] (Option A) `model_cfg['modules']` is empty or not a mapping.")
 
     # Prefer new-style signature: Model(config=<model-subtree>, logger=..., **model_cfg)
-    try:
-        model = Model(config=model_cfg, logger=logger, **model_cfg)
-    except TypeError:
-        # Fallback for old-style signature: Model(logger=..., modules=..., ...)
-        model = Model(logger=logger,
-                      modules=model_cfg['modules'],
-                      use_modules=model_cfg.get('use_modules'),
-                      omit_modules=model_cfg.get('omit_modules'),
-                      seed=model_cfg.get('seed'),
-                      init=model_cfg.get('init', {}))
+    model = Model(config=model_cfg, logger=logger, **model_cfg)
 
     if getattr(trconfig, 'init_weight', None):
         model.load(**trconfig.init_weight)

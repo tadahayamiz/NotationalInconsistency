@@ -24,14 +24,14 @@ model:
 
     masker:
       type: MaskMaker
-      mask_token: 3         # ← 語彙の[MASK]トークンIDに合わせる。例では3
+      mask_token: 3            # ← あなたの語彙での [MASK] ID に合わせる
 
     enc_embedding:
       type: PositionalEmbedding
       embedding:
-        type: torch.nn.Embedding
-        num_embeddings: 400
-        embedding_dim: 512
+        num_embeddings: 400    # (= vocab size)
+        embedding_dim: 512     # (= d_model)
+        # 必要なら padding_idx: 0 など
       max_len: 256
       dropout: 0.0
 
@@ -65,7 +65,6 @@ model:
     dec_embedding:
       type: PositionalEmbedding
       embedding:
-        type: torch.nn.Embedding
         num_embeddings: 400
         embedding_dim: 512
       max_len: 256
@@ -90,7 +89,6 @@ model:
       start_token: 1
       end_token: 2
 
-
   use_modules:
     - teacherforcer
     - masker
@@ -109,6 +107,7 @@ model:
   init:
     type: default
   seed: 111
+
 
 # ---------- Training: 実行側の全設定（train.py が参照） ----------
 training:
