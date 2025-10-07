@@ -1,237 +1,263 @@
-# ============================================
-# config.yaml - Model Configuration
-# ============================================
+# ============================================================
+# config.yaml (runner-side hardening; workers untouched)
+# - 前段フィルタ(Preflight)を train.py で実行するための設定を追加
+# - 実行側(=training.*)に必要なキーのみを定義（未知キーは置かない）
+# - モデル定義は従来どおり（workers を変更しない）
+# ============================================================
 
-variables:
-  $study: "AllPubchem_test"
+# ---------- Preflight: 学習前の簡易フィルタ（train.py 内蔵） ----------
+# RDKit 由来の失敗や極端な長さの系列を「理由付きで」落とします。
+# 許容ドロップ率(max_drop_pct)を超えた場合は中止。レポートは {result_dir}/qc/ に出力。
+preflight:
+  enable: true
+  max_length: 198          # トークン長の上限（input/targetの両方に適用）
+  max_drop_pct: 5          # 許容ドロップ率(%)。厳格運用は 0 に設定
+  check_files: true        # 入力パスの存在確認
+  report_dir: ./qc         # 相対パスは result_dir 配下に解決されます
 
-result_dir:
-  dirname: "./result/${timestamp}_${study}"
-  duplicate: "merge"
-
+# ---------- Model: workers に渡すそのままの構成 ----------
 model:
-  # ここは既存のモデル定義をそのまま置いてください（エンコーダ/デコーダ/埋め込み等）
-  # 例:
-  # modules:
-  #   enc_embedding: { type: EncEmbedding,  ... }
-  #   encoder:       { type: Encoder,       ... }
-  #   pooler:        { type: Pooler,        ... }
-  #   latent2mu:     { type: Affine,        out_dim: 512 }
-  #   latent2var:    { type: Affine,        out_dim: 512 }
-  #   vae:           { type: VAESampler }
-  #   latent2dec:    { type: Affine,        out_dim: 512 }
-  #   dec_embedding: { type: DecEmbedding,  ... }
-  #   decoder:       { type: Decoder,       ... }
-  #   dec2proba:     { type: LinearHead,    ... }
-  #   sequencece:    { type: SequenceCE }
-  #   -d_kl:         { type: KLDivergence }
-  #   -d_kl_factor:  { type: Scale,         factor: 0.001 }
-  #   teacherforcer: { type: TeacherForcer }
-  #   masker:        { type: PaddingMasker }
-  #   dec_supporter: { type: DecodingSupporter }
-  #
-  # ↓↓↓ 入口を1本化するための“実行器”モジュール（新規追加） ↓↓↓
   modules:
-    pipeline:
-      type: PipelineModule
-      # trainingセクションを参照して二重管理を避ける（対応していない場合は下の内容をコピペでも可）
-      train_loop: ${training.train_loop}
-      val_loop:   ${training.val_loop}
-      loss_names: ${training.loss_names}
+    teacherforcer:
+      type: TeacherForcer
+      ratio: 1.0
+    masker:
+      type: SequenceMasker
+    enc_embedding:
+      type: PositionalEmbedding
+      vocab_size: 400
+      d_model: 512
+      dropout: 0.0
+    encoder:
+      type: TransformerEncoder
+      d_model: 512
+      nhead: 8
+      num_layers: 6
+      dropout: 0.1
+    pooler:
+      type: Pooler
+      mode: mean
+    latent2mu:
+      type: Linear
+      in_features: 512
+      out_features: 512
+    latent2var:
+      type: Linear
+      in_features: 512
+      out_features: 512
+    vae:
+      type: GaussianSampler
+    latent2dec:
+      type: Linear
+      in_features: 512
+      out_features: 512
+    dec_embedding:
+      type: PositionalEmbedding
+      vocab_size: 400
+      d_model: 512
+      dropout: 0.0
+    decoder:
+      type: TransformerDecoder
+      d_model: 512
+      nhead: 8
+      num_layers: 6
+      dropout: 0.1
+    dec2proba:
+      type: LinearClassifier
+      in_features: 512
+      num_classes: 400
+      tied_with: enc_embedding
+    dec_supporter:
+      type: GreedyDecoder
+      start_token: 1
+      end_token: 2
+      pad_token: 0
+      max_len: 256
+  use_modules:
+    - teacherforcer
+    - masker
+    - enc_embedding
+    - encoder
+    - pooler
+    - latent2mu
+    - latent2var
+    - vae
+    - latent2dec
+    - dec_embedding
+    - decoder
+    - dec2proba
+    - dec_supporter
+  init:
+    type: default
+  seed: 111
 
+# ---------- Training: 実行側の全設定（train.py が参照） ----------
 training:
-  gpuid: 0
-  timestamp: "$TIMESTAMP"
+  # 実行出力ディレクトリ（$TIMESTAMP のみ使用可）
+  result_dir:
+    dirname: "./result/$TIMESTAMP_AllPubchem"
+    duplicate: "error"    # "error" | "overwrite" | "merge" | "ask"
 
+  # ログ・進捗表示
   verbose:
     show_tqdm: true
     loglevel:
-      stream: "info"
-      file:   "debug"
+      stream: info        # 標準出力
+      file: debug         # ファイル出力（{result_dir}/log.txt）
 
-  # 再現性・挙動
+  # 実行デバイス・再現性（runner と model を分けて初期化）
+  gpuid: 0
   detect_anomaly: false
   deterministic: false
+  runner_seed: 111
   model_seed: 111
 
-  # 途中から読み込む場合に使用（不要なら空でOK）
-  init_weight: {}
-  optimizer_init_weight:
-
-  # -------------------------
-  # Data Loader（あなたの既存の定義を入れてください）
-  # scripts/train.py の update_dataloader_for_epoch() が以下のキーを更新する想定:
-  #   training.data.train.datasets.datasets.input.path_list
-  #   training.data.train.datasets.datasets.target.path_list
-  # -------------------------
+  # データローダ設定（workers を変更せず、そのまま渡す）
   data:
     train:
-      type: pkl_pair               # FIXME: あなたの get_dataloader 実装の type 名に合わせてください
-      batch_size: 256              # FIXME
-      shuffle: true
-      # 下は update_dataloader_for_epoch() で差し替えられる想定のパス構造
+      type: bucket
+      seed: 1
+      bucket_dset: input
+      batch_size: [128, 96, 64, 48, 32, 16]
+      bins: [20, 40, 60, 80, 100, 120, 140, 160]
+      add_lower_margin: true
+      add_upper_margin: true
       datasets:
-        type: paired
+        dfs: {}
         datasets:
           input:
-            type: pkl
-            path_list: "./data/Pubchem_chunk_pro_0_ran.pkl"
+            type: string
+            dim: 1
+            dtype: long
+            len_name: src_len
+            padding_value: 0
+            # ※手元のパスに合わせて変更してください
+            path_list: "./data/AllPubchem_test_random.pkl"
           target:
-            type: pkl
-            path_list: "./data/Pubchem_chunk_pro_0_can.pkl"
+            type: string
+            dim: 1
+            dtype: long
+            len_name: tgt_len
+            padding_value: 0
+            # ※手元のパスに合わせて変更してください
+            path_list: "./data/AllPubchem_test_canonical.pkl"
     vals:
-      # 例: 検証データを複数名前付きで
       valid:
-        type: pkl_pair             # FIXME
-        batch_size: 256
-        shuffle: false
+        type: bucket
+        seed: 1
+        bucket_dset: input
+        batch_size: [128, 96, 64, 48, 32, 16]
+        bins: [20, 40, 60, 80, 100, 120, 140, 160]
+        add_lower_margin: true
+        add_upper_margin: true
         datasets:
-          type: paired
+          dfs: {}
           datasets:
             input:
-              type: pkl
-              path_list: "./data/Pubchem_chunk_pro_0_ran.pkl"
+              type: string
+              dim: 1
+              dtype: long
+              len_name: src_len
+              padding_value: 0
+              path_list: "./data/AllPubchem_test_random.pkl"
             target:
-              type: pkl
-              path_list: "./data/Pubchem_chunk_pro_0_can.pkl"
+              type: string
+              dim: 1
+              dtype: long
+              len_name: tgt_len
+              padding_value: 0
+              path_list: "./data/AllPubchem_test_canonical.pkl"
 
-  # -------------------------
-  # Optimizer / Scheduler
-  # -------------------------
+  # Optimizer / LR Scheduler
   optimizer:
     type: adamw
-    lr: 1.0e-3
-    weight_decay: 0.0
+    lr: 0.001
     betas: [0.9, 0.999]
+    eps: 1.0e-8
+    weight_decay: 0.01
 
-  schedule:
-    opt_freq: 1
+  # ※実際のスケジューラ適用は pre_hooks の scheduler_alarm で行います
   scheduler:
     type: warmup
     warmup: 800
-    last_epoch: -1
 
-  # -------------------------
-  # ループ定義（従来どおり保持）
-  # -------------------------
-  train_loop:
-    - { module: teacherforcer,  input: target,                                    output: [dec_input, dec_target] }
-    - { module: masker,         input: input,                                     output: input_padding_mask }
-    - { module: enc_embedding,  input: input,                                     output: input_emb }
-    - { module: encoder,        input: [input_emb, input_padding_mask],           output: memory }
-    - { type: function, function: { type: transpose, dim0: 0, ...1: 1 }, input: input_padding_mask, output: input_padding_mask2 }
-    - { module: pooler,         input: [memory, input_padding_mask2],             output: latent_base }
-    - { module: latent2mu,      input: latent_base,                               output: mu }
-    - { module: latent2var,     input: latent_base,                               output: var }
-    - { module: vae,            input: { mu: mu, var: var },                      output: latent }
-    - { module: latent2dec,     input: latent,                                    output: dec_latent }
-    - { module: dec_embedding,  input: dec_input }
-    - { module: decoder,        input: { latent: dec_latent, tgt: dec_input },    output: dec_output, mode: forced }
-    - { module: dec2proba,      input: dec_output }
-    - { module: sequencece,     input: [dec_output, dec_target],                  output: sequencece }
-    - { module: -d_kl,          input: [mu, var],                                 output: -d_kl }
-    - { module: -d_kl_factor,   input: -d_kl }
+  # Optimizer の適用頻度（ステップ単位）
+  schedule:
+    opt_freq: 1
 
-  loss_names: [sequencece, -d_kl]
-
-  val_loop:
-    - { module: teacherforcer,  input: target, output: [dec_input, dec_target, dec_target_len], return_len: true }
-    - { module: masker,         input: input,  output: input_padding_mask }
-    - { module: enc_embedding,  input: input }
-    - { module: encoder,        input: [input, input_padding_mask],               output: memory }
-    - { type: function, function: { type: transpose, dim0: 0, ...1: 1 }, input: input_padding_mask, output: input_padding_mask2 }
-    - { module: pooler,         input: [memory, input_padding_mask2],             output: latent_base }
-    - { module: latent2mu,      input: latent_base,                               output: mu }
-    - { module: latent2var,     input: latent_base,                               output: var }
-    - { module: vae,            input: { mu: mu, var: var },                      output: latent }
-    - { module: latent2dec,     input: latent,                                    output: dec_latent }
-    - { module: dec_embedding,  input: dec_input }
-    - { module: decoder,        input: { latent: dec_latent, tgt: dec_input },    output: dec_output, mode: forced }
-    - { module: dec2proba,      input: dec_output }
-    - { module: sequencece,     input: [dec_output, dec_target],                  output: sequencece }
-    - { module: -d_kl,          input: [mu, var],                                 output: -d_kl }
-    - { module: dec_supporter,  mode: force,                                      input: dec_output,   output: forced }
-    - { module: decoder,        mode: prepare_cell_forward,                       input: { latent: dec_latent }, output: state }
-    - { module: dec_supporter,  mode: init,                                       input: { batch_size: batch_size }, output: [cur_input, greedy] }
-    - type: iterate
-      length: dec_target_len
-      processes:
-        - { module: dec_embedding, input: { input: cur_input, position: iterate_i },                            output: cur_input }
-        - { module: decoder,       mode: cell_forward, input: { tgt: cur_input, state: state, position: iterate_i }, output: [cur_output, state] }
-        - { module: dec2proba,     input: cur_output }
-        - { module: dec_supporter, mode: add,         input: { cur_proba: cur_output, outs: greedy },           output: [cur_input, greedy] }
-    - { module: dec_supporter, input: greedy, output: greedy, mode: aggregate }
-
-  # -------------------------
-  # Metrics / Accumulators
-  # -------------------------
+  # 評価指標（name: config のマップ。train.py は dict を想定）
   metrics:
-    "Perfect accuracy":
-      type: perfect_accuracy      # FIXME: あなたの notate.training.get_metric に合わせる
-    "Partial accuracy (greedy decode)":
-      type: partial_accuracy_greedy
-    "Partial accuracy (teacher forcing)":
-      type: partial_accuracy_tf
+    perfect:
+      type: perfect
+    partial_teacher:
+      type: partial_teacher
+    partial_greedy:
+      type: partial_greedy
 
+  # Accumulators（必要ならそのまま）
   accumulators:
-    - { type: NumpyAccumulator, input: 'idx', org_type: 'numpy' }  # 例
+    - type: numpy
+      name: latent
+      save_dir: "./result_np/latent"
+      fields: ["z", "mu", "var"]
+    - type: numpy
+      name: pred
+      save_dir: "./result_np/pred"
+      fields: ["y_pred", "y_true"]
 
-  stocks:
-    score_df: ""   # 既存の val_score.csv を読む場合のみパス
-
-  # -------------------------
-  # Hook群（必要に応じて）
-  # -------------------------
+  # Hooks（train.py 内で hook_type2class に登録済みの型のみ使用）
   pre_hooks:
-    notice_alarm:
-      type: notice_alarm
-      studyname: "${study}"
-      alarm: { type: count, target: step, step: 2500, start: 2500 }
-      end: true
-    save_alarm:
-      type: save_alarm
-      alarm: { type: list, target: step, list: [0, 1000, 2000, 3000, 4000, 5000] }
-      end: true
-    time_abort:
-      type: time_abort
-      threshold: 7200
-    step_abort:
-      type: step_abort
-      threshold: 50000
-    scheduler_alarm:
-      type: scheduler_alarm
-      scheduler:
+    lr_scheduler:
+      type: scheduler_alarm   # train.py 側の SchedulerAlarmHook を使用
+      target: step
+      every: 1
+      scheduler:              # 上の training.scheduler をそのまま渡す
         type: warmup
         warmup: 800
+
   post_hooks:
-    validation_alarm:
-      type: validation_alarm
-    checkpoint_alarm:
-      type: checkpoint_alarm
+    validate:
+      type: validation_alarm  # train.py 内で定義された ValidationAlarmHook
+      target: step
+      every: 1000
+    checkpoint:
+      type: checkpoint_alarm  # train.py 内で定義された CheckpointAlarm
+      target: step
+      every: 5000
 
-  # 旧式の中断パラメータ（Hook化が推奨されるが下位互換で残す）
-  abortion:
-    step:
-    epoch:
-    time:
+  # ループ定義（workers のプロセスに合わせて従来どおり）
+  train_loop:
+    - op: "forward"
+      inputs: ["src", "tgt"]
+      outputs: ["logits"]
+    - op: "loss"
+      inputs: ["logits", "tgt"]
+      outputs: ["loss"]
+    - op: "backward"
+      inputs: ["loss"]
+    - op: "step"
+    - op: "metrics"
+      inputs: ["logits", "tgt"]
+    - op: "accumulate"
+      inputs: ["z", "mu", "var", "logits", "tgt"]
 
-  # ロス正則化・勾配
-  regularize_loss:
-    normalize: false
-    clip_grad_norm:
-    clip_grad_value:
+  val_loop:
+    - op: "forward"
+      inputs: ["src", "tgt"]
+      outputs: ["logits"]
+    - op: "metrics"
+      inputs: ["logits", "tgt"]
+    - op: "accumulate"
+      inputs: ["z", "mu", "var", "logits", "tgt"]
 
-  # 乱数状態の保存/復元（使う場合のみ）
-  rstate:
-    random:
-    numpy:
-    torch:
-    cuda:
+  # 損失名（train.py が合算するキー）
+  loss_names: ["loss"]
 
-# -------------------------
-# process（入口1本化：ForwardProcess用）
-# -------------------------
-process:
-  type: forward
-  module: pipeline     # ← 上で定義した PipelineModule を入口に
-  input: batch         # ← バッチ辞書をそのまま渡す（ForwardProcess 実装に合わせて dict/kwargs 両対応）
+  # 補助設定
+  val_loop_add_train: false
+  abortion: { step: null, epoch: null, time: null }
+  rstate: {}
+  stocks: { score_df: "" }
+
+  # 1 epoch あたりのステップ数（train.py 側で参照）
+  steps_per_epoch: 1000
