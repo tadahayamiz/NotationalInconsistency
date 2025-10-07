@@ -38,9 +38,6 @@ for cls in [
 ]:
     module_type2class[cls.__name__] = cls
 
-# ---- register pipeline runner (Plan A) ----
-module_type2class["PipelineModule"] = PipelineModule  # ★ NEW
-
 __all__ = [
     # Sequence/Transformer modules
     'TeacherForcer', 'MaskMaker', 'SelfAttentionLayer', 'PositionalEmbedding',
@@ -57,7 +54,4 @@ __all__ = [
     'MeanPooler', 'StartPooler', 'MaxPooler', 'MeanStartMaxPooler',
     'MeanStartEndMaxPooler', 'MeanStdStartEndMaxMinPooler', 'NoAffinePooler',
     'NemotoPooler', 'GraphPooler',
-
-    # Pipeline runner
-    'PipelineModule',
 ]
