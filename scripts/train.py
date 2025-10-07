@@ -526,7 +526,9 @@ def main(config, args=None):
             self.scheduler = get_scheduler(optimizer, **scheduler)
 
         def ring(self, batch, model):
-            self.scheduler.step()
+            # ★ そのstepで optimizer.step() を実行した場合のみ進める
+            if batch.get('opt_stepped', False):
+                self.scheduler.step()
 
     hook_type2class['scheduler_alarm'] = SchedulerAlarmHook
 
@@ -715,6 +717,9 @@ def main(config, args=None):
             if dl_train.step % trconfig.schedule.opt_freq == 0:
                 optimizer.step()
                 optimizer.zero_grad()
+                batch['opt_stepped'] = True
+            else:
+                batch['opt_stepped'] = False
             batch['time'] = time.time() - start
 
             for hook in post_hooks:

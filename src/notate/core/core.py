@@ -145,6 +145,16 @@ class Model(nn.Module):
         )
 
 
+    def __getitem__(self, key: str):
+        # components に登録されているモジュール名を最優先
+        if hasattr(self, "components") and key in self.components:
+            return self.components[key]
+        # 念のため属性にもフォールバック（例: self.encoder など）
+        if hasattr(self, key):
+            return getattr(self, key)
+        raise KeyError(f"Model has no submodule/attr named '{key}'")
+
+
 # ===== Legacy API compatibility for modules expecting older helpers =====
 # - Provide function_config2func / init_config2func / module_type2class
 # - Define ONLY if they are missing to avoid overriding project-specific ones.
