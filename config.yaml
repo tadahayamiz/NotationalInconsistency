@@ -35,10 +35,11 @@ model:
 
     encoder:
       type: TransformerEncoder
-      layer:                 # ← SelfAttentionLayer の純 kwargs（type は書かない）
+      layer:                # SelfAttentionLayer の純 kwargs（type を書かない）
         d_model: 512
         nhead: 8
         dropout: 0.1
+        activation: gelu    # ← これを追加
       n_layer: 6
 
     pooler:
@@ -69,12 +70,13 @@ model:
 
     decoder:
       type: TransformerDecoder
-      layer:
+      layer:                # SelfAttentionLayer の純 kwargs（type を書かない）
         d_model: 512
         nhead: 8
         dropout: 0.1
+        activation: gelu    # ← これを追加
       n_layer: 6
-      max_len: 256      # ← これが必須
+      max_len: 256
 
     dec2proba:
       type: MLP
