@@ -261,3 +261,13 @@ training:
 
   # 1 epoch あたりのステップ数（train.py 側で参照）
   steps_per_epoch: 1000
+
+
+preflight:
+  enable: true
+  max_length: 198
+  max_drop_pct: 5
+  check_files: true
+  report_dir: ./qc
+  apply_to_train: true   # 既定 true
+  apply_to_vals:  true   # ← ここを true にすれば、validation にも適用されます

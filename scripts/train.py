@@ -93,32 +93,35 @@ def _save_pickle(obj, path):
         pickle.dump(obj, f)
 
 
-# ====== Preflight (inline; minimal & optional) ======
+# ====== Preflight (inline; train/val 両方に適用可) ======
 def run_preflight_and_rewrite_paths(cfg: Dict, result_dir: str, logger):
     """
     Preflight:
-      - Works on token pickles (input/target) without touching workers
-      - Filters pairs exceeding token length threshold
-      - Enforces max drop percentage
-      - Writes cleaned pickles under {result_dir}/preflight/
-      - Rewrites config paths to the cleaned files
+      - token 済み pickle（input/target）を長さでフィルタ
+      - split ごと（train / 各 val）に drop 率を判定し、閾値超過なら中止
+      - {result_dir}/preflight/<split>/ に _clean.pkl を保存
+      - config の path_list を “clean 側” に書き換え
 
-    Config (yaml):
+    Config 追加キー:
       preflight:
         enable: true
         max_length: 198
-        max_drop_pct: 5
+        max_drop_pct: 5.0          # %（各 split に個別適用）
         check_files: true
-        report_dir: "./qc"  # resolved under result_dir if relative
+        report_dir: "./qc"         # 相対は result_dir 配下に解決
+        apply_to_train: true       # train に適用
+        apply_to_vals:  false      # validation にも適用（true で有効）
     """
     pf = cfg.get('preflight', None)
     if not pf or not pf.get('enable', False):
         logger.info("[preflight] disabled")
         return cfg  # unchanged
 
-    max_len = int(pf.get('max_length', 198))
-    max_drop_pct = float(pf.get('max_drop_pct', 5.0))
-    check_files = bool(pf.get('check_files', True))
+    max_len       = int(pf.get('max_length', 198))
+    max_drop_pct  = float(pf.get('max_drop_pct', 5.0))
+    check_files   = bool(pf.get('check_files', True))
+    apply_train   = bool(pf.get('apply_to_train', True))
+    apply_vals    = bool(pf.get('apply_to_vals', False))
 
     # resolve report dir
     report_dir = pf.get('report_dir', os.path.join(result_dir, "qc"))
@@ -126,92 +129,145 @@ def run_preflight_and_rewrite_paths(cfg: Dict, result_dir: str, logger):
         report_dir = os.path.join(result_dir, os.path.normpath(report_dir))
     os.makedirs(report_dir, exist_ok=True)
 
-    # Expected path location inside config:
-    base_key = "training.data.train.datasets.datasets"
-    in_paths = _dget(cfg, f"{base_key}.input.path_list")
-    tgt_paths = _dget(cfg, f"{base_key}.target.path_list")
+    # ---- 内部 helper: 1 split を preflight して config を書き換え ----
+    def _apply_to_split(base_key: str, split_label: str):
+        """
+        base_key 例:
+          - train: 'training.data.train.datasets.datasets'
+          - valX : 'training.data.vals.<name>.datasets.datasets'
+        """
+        in_paths = _dget(cfg, f"{base_key}.input.path_list")
+        tgt_paths = _dget(cfg, f"{base_key}.target.path_list")
+        if in_paths is None or tgt_paths is None:
+            logger.warning(f"[preflight] {split_label}: path_list not found. Skipped.")
+            return None  # nothing to do
 
-    if in_paths is None or tgt_paths is None:
-        logger.warning("[preflight] path_list not found in config. Skipped filtering.")
-        return cfg
+        in_paths = _ensure_list(in_paths)
+        tgt_paths = _ensure_list(tgt_paths)
 
-    in_paths = _ensure_list(in_paths)
-    tgt_paths = _ensure_list(tgt_paths)
+        if check_files:
+            for p in in_paths + tgt_paths:
+                if not _file_exists(p):
+                    raise SystemExit(f"[preflight] {split_label}: missing data file: {p}")
 
-    if check_files:
-        for p in in_paths + tgt_paths:
-            if not _file_exists(p):
-                raise SystemExit(f"[preflight] missing data file: {p}")
+        if len(in_paths) != len(tgt_paths):
+            logger.warning(f"[preflight] {split_label}: #input pickles != #target pickles. Proceed per index until min length.")
+        pair_n = min(len(in_paths), len(tgt_paths))
 
-    if len(in_paths) != len(tgt_paths):
-        logger.warning("[preflight] #input pickles != #target pickles. Proceed per index until min length.")
-    pair_n = min(len(in_paths), len(tgt_paths))
-    cleaned_in_paths, cleaned_tgt_paths = [], []
-    total_before, total_after, total_dropped = 0, 0, 0
+        clean_dir = os.path.join(result_dir, "preflight", split_label)
+        os.makedirs(clean_dir, exist_ok=True)
 
-    clean_dir = os.path.join(result_dir, "preflight")
-    os.makedirs(clean_dir, exist_ok=True)
+        cleaned_in_paths, cleaned_tgt_paths = [], []
+        total_before, total_after, total_dropped = 0, 0, 0
 
-    for i in range(pair_n):
-        src_in = in_paths[i]
-        src_tg = tgt_paths[i]
-        try:
-            arr_in = _load_pickle_list(src_in)
-            arr_tg = _load_pickle_list(src_tg)
-        except Exception as e:
-            raise SystemExit(f"[preflight] failed to load {src_in} or {src_tg}: {e}")
-
-        L = min(len(arr_in), len(arr_tg))
-        keep_idx = []
-        for k in range(L):
+        for i in range(pair_n):
+            src_in = in_paths[i]
+            src_tg = tgt_paths[i]
             try:
-                li = len(arr_in[k])
-                lt = len(arr_tg[k])
-            except Exception:
-                # malformed item -> drop
-                continue
-            ok = (li <= max_len) and (lt <= max_len) and (li > 0) and (lt > 0)
-            if ok:
-                keep_idx.append(k)
+                arr_in = _load_pickle_list(src_in)
+                arr_tg = _load_pickle_list(src_tg)
+            except Exception as e:
+                raise SystemExit(f"[preflight] {split_label}: failed to load {src_in} or {src_tg}: {e}")
 
-        total_before += L
-        total_after += len(keep_idx)
-        total_dropped += (L - len(keep_idx))
+            L = min(len(arr_in), len(arr_tg))
+            keep_idx = []
+            for k in range(L):
+                try:
+                    li = len(arr_in[k])
+                    lt = len(arr_tg[k])
+                except Exception:
+                    # malformed item -> drop
+                    continue
+                ok = (li <= max_len) and (lt <= max_len) and (li > 0) and (lt > 0)
+                if ok:
+                    keep_idx.append(k)
 
-        base_in = os.path.basename(src_in)
-        base_tg = os.path.basename(src_tg)
-        dst_in = os.path.join(clean_dir, base_in.replace(".pkl", "_clean.pkl"))
-        dst_tg = os.path.join(clean_dir, base_tg.replace(".pkl", "_clean.pkl"))
-        _save_pickle([arr_in[k] for k in keep_idx], dst_in)
-        _save_pickle([arr_tg[k] for k in keep_idx], dst_tg)
-        cleaned_in_paths.append(dst_in)
-        cleaned_tgt_paths.append(dst_tg)
+            total_before += L
+            total_after  += len(keep_idx)
+            total_dropped += (L - len(keep_idx))
 
-        logger.info(f"[preflight] {base_in}/{base_tg}: {L} -> {len(keep_idx)} kept (max_len={max_len})")
+            base_in = os.path.basename(src_in)
+            base_tg = os.path.basename(src_tg)
+            dst_in = os.path.join(clean_dir, base_in.replace(".pkl", "_clean.pkl"))
+            dst_tg = os.path.join(clean_dir, base_tg.replace(".pkl", "_clean.pkl"))
+            _save_pickle([arr_in[k] for k in keep_idx], dst_in)
+            _save_pickle([arr_tg[k] for k in keep_idx], dst_tg)
+            cleaned_in_paths.append(dst_in)
+            cleaned_tgt_paths.append(dst_tg)
 
-    # drop-rate gate
-    drop_pct = (100.0 * total_dropped / max(1, total_before))
-    summary = {
-        "total_before": int(total_before),
-        "total_after": int(total_after),
-        "total_dropped": int(total_dropped),
-        "drop_pct": float(drop_pct),
-        "max_len": int(max_len),
-        "max_drop_pct": float(max_drop_pct),
-    }
-    _save_pickle(summary, os.path.join(report_dir, "preflight_summary.pkl"))
-    with open(os.path.join(report_dir, "preflight_summary.txt"), "w", encoding="utf-8") as f:
-        for k, v in summary.items():
-            f.write(f"{k}: {v}\n")
+            logger.info(f"[preflight] {split_label}: {base_in}/{base_tg}: {L} -> {len(keep_idx)} kept (max_len={max_len})")
 
-    if drop_pct > max_drop_pct:
-        raise SystemExit(f"[preflight] drop {drop_pct:.2f}% > allowed {max_drop_pct:.2f}%")
+        # split 単位の drop 判定
+        drop_pct = (100.0 * total_dropped / max(1, total_before))
+        # split summary
+        summary = {
+            "split": split_label,
+            "total_before": int(total_before),
+            "total_after":  int(total_after),
+            "total_dropped": int(total_dropped),
+            "drop_pct":     float(drop_pct),
+            "max_len":      int(max_len),
+            "allowed_max_drop_pct": float(max_drop_pct),
+        }
+        # 保存（split 名付き）
+        _save_pickle(summary, os.path.join(report_dir, f"preflight_summary_{split_label}.pkl"))
+        with open(os.path.join(report_dir, f"preflight_summary_{split_label}.txt"), "w", encoding="utf-8") as f:
+            for k, v in summary.items():
+                f.write(f"{k}: {v}\n")
 
-    # rewrite config to cleaned paths
-    _dset(cfg, f"{base_key}.input.path_list", cleaned_in_paths if len(cleaned_in_paths) > 1 else cleaned_in_paths[0])
-    _dset(cfg, f"{base_key}.target.path_list", cleaned_tgt_paths if len(cleaned_tgt_paths) > 1 else cleaned_tgt_paths[0])
+        if total_after == 0:
+            raise SystemExit(f"[preflight] {split_label}: all samples dropped (0 remain).")
+        if drop_pct > max_drop_pct:
+            raise SystemExit(f"[preflight] {split_label}: drop {drop_pct:.2f}% > allowed {max_drop_pct:.2f}%")
 
-    logger.info(f"[preflight] done: kept={total_after} / {total_before} (drop={drop_pct:.2f}%)")
+        # config の書き換え
+        _dset(cfg, f"{base_key}.input.path_list",
+              cleaned_in_paths if len(cleaned_in_paths) > 1 else cleaned_in_paths[0])
+        _dset(cfg, f"{base_key}.target.path_list",
+              cleaned_tgt_paths if len(cleaned_tgt_paths) > 1 else cleaned_tgt_paths[0])
+
+        logger.info(f"[preflight] {split_label}: kept={total_after} / {total_before} (drop={drop_pct:.2f}%)")
+        return summary
+
+    # ---- 適用先 split を組み立てて実行 ----
+    all_summaries = []
+
+    if apply_train:
+        base_key = "training.data.train.datasets.datasets"
+        s = _apply_to_split(base_key, "train")
+        if s is not None:
+            all_summaries.append(s)
+
+    if apply_vals:
+        vals = _dget(cfg, "training.data.vals", None)
+        if isinstance(vals, Dict) and len(vals) > 0:
+            for name in list(vals.keys()):
+                base_key = f"training.data.vals.{name}.datasets.datasets"
+                s = _apply_to_split(base_key, f"val_{name}")
+                if s is not None:
+                    all_summaries.append(s)
+        else:
+            logger.warning("[preflight] apply_to_vals=True だが validation 設定が見つかりませんでした。")
+
+    # ---- 全体サマリ（任意） ----
+    if len(all_summaries) > 0:
+        total_before = sum(s["total_before"] for s in all_summaries)
+        total_after  = sum(s["total_after"]  for s in all_summaries)
+        total_dropped = sum(s["total_dropped"] for s in all_summaries)
+        global_summary = {
+            "splits": [s["split"] for s in all_summaries],
+            "total_before": int(total_before),
+            "total_after":  int(total_after),
+            "total_dropped": int(total_dropped),
+            "drop_pct": float(100.0 * total_dropped / max(1, total_before)),
+            "max_len": int(max_len),
+            "allowed_max_drop_pct_per_split": float(max_drop_pct),
+        }
+        _save_pickle(global_summary, os.path.join(report_dir, "preflight_summary_all.pkl"))
+        with open(os.path.join(report_dir, "preflight_summary_all.txt"), "w", encoding="utf-8") as f:
+            for k, v in global_summary.items():
+                f.write(f"{k}: {v}\n")
+
     return cfg
 
 
@@ -311,7 +367,7 @@ def main(config, args=None):
         np.random.seed(trconfig.model_seed)
         torch.manual_seed(trconfig.model_seed)
         torch.cuda.manual_seed(trconfig.model_seed)
-    model = Model(logger=logger, **config.model)
+    model = Model(config=config, logger=logger, **config.model)
     if trconfig.init_weight:
         model.load(**trconfig.init_weight)
     model.to(DEVICE)
