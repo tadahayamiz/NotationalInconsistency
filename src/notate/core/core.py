@@ -143,3 +143,115 @@ class Model(nn.Module):
             "Model.forward is intentionally undefined in strict mode. "
             "Use process graphs (get_process) to orchestrate component calls."
         )
+
+
+# ===== Legacy API compatibility for modules expecting older helpers =====
+# - Provide function_config2func / init_config2func / module_type2class
+# - Define ONLY if they are missing to avoid overriding project-specific ones.
+
+try:
+    function_config2func
+except NameError:
+    import math
+    from functools import partial
+    import torch
+    import torch.nn as nn
+    import torch.nn.functional as F
+
+    # Option for debug parity (kept for completeness)
+    PRINT_PROCESS = False
+
+    # --- functions (as in the original code) ---
+    def NewGELU(input):
+        return 0.5 * input * (1.0 + torch.tanh(math.sqrt(2.0 / math.pi) \
+            * (input + 0.044715 * torch.pow(input, 3.0))))
+
+    def sigmoid(input):
+        return 1/(1+math.e**(-input))
+
+    init_type2func = {
+        'glorot_uniform': nn.init.xavier_uniform_,
+        'glorot_normal': nn.init.xavier_normal_,
+        'he_uniform': nn.init.kaiming_uniform_,
+        'he_normal': nn.init.kaiming_normal_,
+        'zero': nn.init.zeros_,
+        'zeros': nn.init.zeros_,
+        'one': nn.init.ones_,
+        'ones': nn.init.ones_,
+        'normal': nn.init.normal_,
+        'none': lambda input: None,
+    }
+
+    def init_config2func(type='none', factor=None, **kwargs):
+        """
+        Parameters
+        ----------
+        type: int, float, str or dict
+            ** で展開する前の引数を第一引数(=type)に与えてもよい。
+        """
+        if factor is not None:
+            def init(input: nn.Parameter):
+                init_config2func(type, **kwargs)(input)
+                input.data = input.data * factor
+            return init
+
+        if isinstance(type, dict):
+            return init_config2func(**type)
+
+        if isinstance(type, (int, float)):
+            return lambda input: nn.init.constant_(input, float(type))
+        elif type in init_type2func:
+            return lambda input: init_type2func[type](input, **kwargs)
+        else:
+            raise ValueError(f"Unsupported type of init function: {type}")
+
+    def init_config2func_old(layer_config):
+        # Backward-compat shim (kept to match older callers)
+        if isinstance(layer_config, (str, int, float)):
+            type_ = layer_config
+        elif isinstance(layer_config, dict):
+            if layer_config == {}:
+                type_ = 'none'
+            else:
+                type_ = layer_config['type']
+
+        if isinstance(type_, (int, float)):
+            return lambda input: nn.init.constant_(input, float(type_))
+
+        if type_ in init_type2func:
+            return init_type2func[type_]
+        elif type_ == 'uniform':
+            return lambda input: nn.init.uniform_(input, layer_config['a'], layer_config['b'])
+        elif type_ == 'normal':
+            return lambda input: nn.init.normal_(input, layer_config['mean'], layer_config['std'])
+        else:
+            raise ValueError(f"Unsupported types of init function: {layer_config}")
+
+    function_name2func = {
+        'relu': F.relu,
+        'gelu': F.gelu,
+        'sigmoid': torch.sigmoid,
+        'tanh': torch.tanh,
+        'newgelu': NewGELU,
+        'none': lambda input: input,
+        'exp': torch.exp,
+        'log': torch.log,
+        'sum': torch.sum,
+        'mean': torch.mean,
+        'log_softmax': F.log_softmax,
+        'softplus': F.softplus,
+        'transpose': torch.transpose,
+        'argmax': torch.argmax
+    }
+
+    def function_config2func(config):
+        if isinstance(config, str):
+            return function_name2func[config]
+        else:
+            # config is a dict like {'type': 'relu', 'dim': 1, ...}
+            return partial(function_name2func[config.pop('type')], **config)
+
+    # Provide module_type2class if it's missing (sequence.py imports it)
+    if 'module_type2class' not in globals():
+        module_type2class = {}
+# ===== end of legacy compatibility block =====
