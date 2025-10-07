@@ -254,4 +254,69 @@ except NameError:
     # Provide module_type2class if it's missing (sequence.py imports it)
     if 'module_type2class' not in globals():
         module_type2class = {}
+
+
+# --- put this inside your legacy-compat block in core.py ---
+
+import importlib
+import inspect
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+def _resolve_symbol(path_or_callable):
+    """Accept callable or dotted path like 'torch.nn.Embedding'."""
+    if callable(path_or_callable):
+        return path_or_callable
+    if not isinstance(path_or_callable, str):
+        raise TypeError(f"Unsupported symbol spec: {type(path_or_callable)}")
+    if "." in path_or_callable:
+        modname, attr = path_or_callable.rsplit(".", 1)
+        mod = importlib.import_module(modname)
+        return getattr(mod, attr)
+    # fallbacks for short names
+    table = {
+        "relu": F.relu, "gelu": F.gelu, "sigmoid": torch.sigmoid, "tanh": torch.tanh,
+        "exp": torch.exp, "log": torch.log, "sum": torch.sum, "mean": torch.mean,
+        "log_softmax": F.log_softmax, "softplus": F.softplus, "transpose": torch.transpose,
+        "argmax": torch.argmax, "Embedding": nn.Embedding, "Linear": nn.Linear,
+        "LayerNorm": nn.LayerNorm, "Dropout": nn.Dropout,
+    }
+    if path_or_callable in table:
+        return table[path_or_callable]
+    raise ImportError(f"Cannot resolve symbol '{path_or_callable}'")
+
+def function_config2func(cfg, variables=None, logger=None):
+    """
+    Build a callable (constructor or function) from cfg:
+      - str: dotted path ('torch.nn.Embedding') or short name ('relu')
+      - dict: {'type': <str|callable>, **kwargs} -> returns partial/constructor
+      - list/tuple: chain of callables
+    """
+    if cfg is None:
+        return None
+    if callable(cfg):
+        return cfg
+    if isinstance(cfg, str):
+        return _resolve_symbol(cfg)
+    if isinstance(cfg, dict):
+        if "type" not in cfg:
+            raise ValueError("function_config2func requires 'type' in dict config")
+        base = function_config2func(cfg["type"], variables=variables, logger=logger)
+        kwargs = {k: v for k, v in cfg.items() if k != "type"}
+        # constructor or function
+        if inspect.isclass(base):
+            return lambda *a, **kw: base(*a, **{**kwargs, **kw})
+        return lambda *a, **kw: base(*a, **{**kwargs, **kw})
+    if isinstance(cfg, (list, tuple)):
+        funcs = [function_config2func(x, variables=variables, logger=logger) for x in cfg if x is not None]
+        def chained(x, *args, **kwargs):
+            y = x
+            for fn in funcs:
+                y = fn(y, *args, **kwargs) if callable(fn) else y
+            return y
+        return chained
+    raise TypeError(f"Unsupported function_config type: {type(cfg)}")
+
+
 # ===== end of legacy compatibility block =====

@@ -20,59 +20,90 @@ model:
   modules:
     teacherforcer:
       type: TeacherForcer
-      ratio: 1.0
+      length_dim: 1   # ← required (was: ratio)
+
     masker:
-      type: SequenceMasker
+      type: MaskMaker # ← SequenceMasker ではなくこちら
+
+    # token embedding + positional encoding
     enc_embedding:
       type: PositionalEmbedding
-      vocab_size: 400
-      d_model: 512
+      embedding:
+        type: torch.nn.Embedding
+        num_embeddings: 400   # (= vocab size)
+        embedding_dim: 512    # (= d_model)
+      max_len: 256
       dropout: 0.0
+
+    # Transformer encoder expects a "layer" template + n_layer
     encoder:
       type: TransformerEncoder
-      d_model: 512
-      nhead: 8
-      num_layers: 6
-      dropout: 0.1
+      layer:
+        type: SelfAttentionLayer
+        d_model: 512
+        nhead: 8
+        dropout: 0.1
+      n_layer: 6
+      # norm / init は必要なら追記（未指定で良い実装が多い）
+
     pooler:
-      type: Pooler
-      mode: mean
+      type: MeanPooler  # そのまま（必要に応じて変更可）
+
     latent2mu:
-      type: Linear
+      type: MLP
       in_features: 512
+      hidden_features: [512]
       out_features: 512
+      activation: gelu
+
     latent2var:
-      type: Linear
+      type: MLP
       in_features: 512
+      hidden_features: [512]
       out_features: 512
+      activation: gelu
+
     vae:
-      type: GaussianSampler
+      type: VAE  # 既存のまま（必要なら MinusD_KLLoss などと組み合わせ）
+
     latent2dec:
-      type: Linear
+      type: MLP
       in_features: 512
+      hidden_features: [512]
       out_features: 512
+      activation: gelu
+
     dec_embedding:
       type: PositionalEmbedding
-      vocab_size: 400
-      d_model: 512
+      embedding:
+        type: torch.nn.Embedding
+        num_embeddings: 400
+        embedding_dim: 512
+      max_len: 256
       dropout: 0.0
+
     decoder:
       type: TransformerDecoder
-      d_model: 512
-      nhead: 8
-      num_layers: 6
-      dropout: 0.1
+      layer:
+        type: SelfAttentionLayer
+        d_model: 512
+        nhead: 8
+        dropout: 0.1
+      n_layer: 6
+      max_len: 256
+
     dec2proba:
-      type: LinearClassifier
+      type: MLP   # LinearClassifier が未登録の場合に備え MLP で代替
       in_features: 512
-      num_classes: 400
-      tied_with: enc_embedding
+      hidden_features: []
+      out_features: 400
+      activation: none
+
     dec_supporter:
       type: GreedyDecoder
       start_token: 1
-      end_token: 2
-      pad_token: 0
-      max_len: 256
+      end_token: 2     # pad_token / max_len は渡さない（未知キー）
+
   use_modules:
     - teacherforcer
     - masker
@@ -87,6 +118,7 @@ model:
     - decoder
     - dec2proba
     - dec_supporter
+
   init:
     type: default
   seed: 111
