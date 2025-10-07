@@ -1,14 +1,10 @@
 import sys, os
-"""ver 13 (runner-side hardening; workers untouched)
- - Add Preflight (inline) to filter/verify inputs before training
- - Strict config sanity checks without adding new deps
- - Make steps_per_epoch configurable (fallback to previous 30000)
- - Keep worker modules and dataloader contracts untouched
+"""Runner-side hardening (workers untouched)
+ - Import from `notate.*` (no external `tools` package needed)
+ - Preflight (inline) filters token pickles by length and rewrites paths
+ - Keeps original training loop behavior as much as possible
 """
 
-# ====== original header (kept) ======
-os.environ.setdefault("TOOLS_DIR", "/workspace/Transformers_VAE")
-sys.path += [os.environ["TOOLS_DIR"]]
 import pickle
 import time
 import yaml
@@ -22,20 +18,21 @@ from collections import defaultdict
 from tqdm import tqdm
 import gc
 
-from tools.notice import notice, noticeerror
-from tools.path import make_result_dir, timestamp
-from tools.logger import default_logger
-from tools.args import load_config2, subs_vars
-from models.dataset import get_dataloader
-from models.accumulator import get_accumulator, NumpyAccumulator
-from models.metric import get_metric
-from models.optimizer import get_optimizer, get_scheduler
-from models.process import get_process
-from tools.tools import nullcontext
-from models.hooks import AlarmHook, hook_type2class, get_hook
-from models import Model
+# ==== import from notate.* (Colab / editable install friendly) ====
+from notate.tools.path import make_result_dir, timestamp
+from notate.tools.logger import default_logger
+from notate.tools.args import load_config2, subs_vars
+from notate.tools.tools import nullcontext
 
-# ====== runner-side utility (new) ======
+from notate.data import get_dataloader, get_accumulator, NumpyAccumulator
+from notate.training import (
+    get_metric, get_optimizer, get_scheduler, get_process,
+    AlarmHook, hook_type2class, get_hook
+)
+from notate.core import Model
+
+
+# ====== runner-side utility ======
 def _seed_everything(seed: int):
     if seed is None:
         return
@@ -44,6 +41,7 @@ def _seed_everything(seed: int):
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed(seed)
+
 
 def _dget(dct: Dict, path: str, default=None):
     """dot-path getter for addict.Dict"""
@@ -54,6 +52,7 @@ def _dget(dct: Dict, path: str, default=None):
         cur = cur[p]
     return cur
 
+
 def _dset(dct: Dict, path: str, value):
     cur = dct
     parts = path.split('.')
@@ -63,10 +62,12 @@ def _dset(dct: Dict, path: str, value):
         cur = cur[p]
     cur[parts[-1]] = value
 
+
 def _ensure_list(x):
     if x is None:
         return []
     return x if isinstance(x, (list, tuple)) else [x]
+
 
 def _file_exists(path):
     try:
@@ -74,29 +75,30 @@ def _file_exists(path):
     except Exception:
         return False
 
+
 def _load_pickle_list(path):
     with open(path, 'rb') as f:
         obj = pickle.load(f)
-    # normalize to list-of-lists of ints (tokens)
     if isinstance(obj, (list, tuple)):
         return list(obj)
     elif isinstance(obj, np.ndarray):
         return obj.tolist()
     else:
-        # leave as-is; caller may validate
-        return obj
+        return obj  # leave as-is; caller validates
+
 
 def _save_pickle(obj, path):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, 'wb') as f:
         pickle.dump(obj, f)
 
+
 # ====== Preflight (inline; minimal & optional) ======
 def run_preflight_and_rewrite_paths(cfg: Dict, result_dir: str, logger):
     """
-    Preflight is intentionally simple and self-contained:
-      - Works on token pickles (no worker modification)
-      - Optionally drops pairs exceeding token-length threshold
+    Preflight:
+      - Works on token pickles (input/target) without touching workers
+      - Filters pairs exceeding token length threshold
       - Enforces max drop percentage
       - Writes cleaned pickles under {result_dir}/preflight/
       - Rewrites config paths to the cleaned files
@@ -104,10 +106,10 @@ def run_preflight_and_rewrite_paths(cfg: Dict, result_dir: str, logger):
     Config (yaml):
       preflight:
         enable: true
-        max_length: 198          # token length threshold (inclusive)
-        max_drop_pct: 5          # allowed drop percentage (0=>strict)
-        check_files: true        # verify input/target pkl existence
-        report_dir: "./result/qc"  # will be relativized to result_dir if relative
+        max_length: 198
+        max_drop_pct: 5
+        check_files: true
+        report_dir: "./qc"  # resolved under result_dir if relative
     """
     pf = cfg.get('preflight', None)
     if not pf or not pf.get('enable', False):
@@ -124,10 +126,7 @@ def run_preflight_and_rewrite_paths(cfg: Dict, result_dir: str, logger):
         report_dir = os.path.join(result_dir, os.path.normpath(report_dir))
     os.makedirs(report_dir, exist_ok=True)
 
-    # locate input/target pickle paths in train loader config
-    # Expected structure used elsewhere in this file:
-    # training.data.train.datasets.datasets.{input|target}.path_list
-    # If structure differs, we skip preflight gracefully.
+    # Expected path location inside config:
     base_key = "training.data.train.datasets.datasets"
     in_paths = _dget(cfg, f"{base_key}.input.path_list")
     tgt_paths = _dget(cfg, f"{base_key}.target.path_list")
@@ -144,7 +143,6 @@ def run_preflight_and_rewrite_paths(cfg: Dict, result_dir: str, logger):
             if not _file_exists(p):
                 raise SystemExit(f"[preflight] missing data file: {p}")
 
-    # For simplicity we assume one-to-one pair of pickle files (most common here)
     if len(in_paths) != len(tgt_paths):
         logger.warning("[preflight] #input pickles != #target pickles. Proceed per index until min length.")
     pair_n = min(len(in_paths), len(tgt_paths))
@@ -163,7 +161,6 @@ def run_preflight_and_rewrite_paths(cfg: Dict, result_dir: str, logger):
         except Exception as e:
             raise SystemExit(f"[preflight] failed to load {src_in} or {src_tg}: {e}")
 
-        # pairwise filter by token length (strict; both sides must be valid)
         L = min(len(arr_in), len(arr_tg))
         keep_idx = []
         for k in range(L):
@@ -181,7 +178,6 @@ def run_preflight_and_rewrite_paths(cfg: Dict, result_dir: str, logger):
         total_after += len(keep_idx)
         total_dropped += (L - len(keep_idx))
 
-        # write cleaned pickles
         base_in = os.path.basename(src_in)
         base_tg = os.path.basename(src_tg)
         dst_in = os.path.join(clean_dir, base_in.replace(".pkl", "_clean.pkl"))
@@ -195,7 +191,6 @@ def run_preflight_and_rewrite_paths(cfg: Dict, result_dir: str, logger):
 
     # drop-rate gate
     drop_pct = (100.0 * total_dropped / max(1, total_before))
-    # report
     summary = {
         "total_before": int(total_before),
         "total_after": int(total_after),
@@ -219,6 +214,7 @@ def run_preflight_and_rewrite_paths(cfg: Dict, result_dir: str, logger):
     logger.info(f"[preflight] done: kept={total_after} / {total_before} (drop={drop_pct:.2f}%)")
     return cfg
 
+
 # ====== random state I/O (kept) ======
 def save_rstate(dirname):
     os.makedirs(dirname, exist_ok=True)
@@ -228,6 +224,7 @@ def save_rstate(dirname):
         pickle.dump(np.random.get_state(), f)
     torch.save(torch.get_rng_state(), f"{dirname}/torch.pt")
     torch.save(torch.cuda.get_rng_state_all(), f"{dirname}/cuda.pt")
+
 
 def set_rstate(config):
     if 'random' in config:
@@ -240,6 +237,7 @@ def set_rstate(config):
         torch.set_rng_state(torch.load(config.torch))
     if 'cuda' in config:
         torch.cuda.set_rng_state_all(torch.load(config.cuda))
+
 
 # ====== hooks (kept, minimal change) ======
 class NoticeAlarmHook(AlarmHook):
@@ -254,6 +252,7 @@ class NoticeAlarmHook(AlarmHook):
 
 hook_type2class['notice_alarm'] = NoticeAlarmHook
 
+
 def main(config, args=None):
     # substitute variables (kept)
     config = subs_vars(config, {"$TIMESTAMP": timestamp()})
@@ -267,7 +266,7 @@ def main(config, args=None):
     if args is not None:
         logger.warning(f"options: {' '.join(args)}")
 
-    # runner-side seed (model_seed keeps original behavior for model init)
+    # runner-side seed
     _seed_everything(int(trconfig.get('runner_seed', trconfig.get('model_seed', 0))))
 
     # --- runner-side preflight (new) ---
@@ -283,7 +282,6 @@ def main(config, args=None):
         new_path = f"./data/Pubchem_chunk_pro_{epoch}_ran.pkl"
         new_path2 = f"./data/Pubchem_chunk_pro_{epoch}_can.pkl"
         updated_config = config.copy()
-        # rewrite only when keys exist; otherwise keep current loader
         try:
             updated_config['training']['data']['train']['datasets']['datasets']['input']['path_list'] = new_path
             updated_config['training']['data']['train']['datasets']['datasets']['target']['path_list'] = new_path2
@@ -341,8 +339,13 @@ def main(config, args=None):
     accumulators = [ get_accumulator(logger=logger, **acc_config) for acc_config in trconfig.accumulators ]
     idx_accumulator = NumpyAccumulator(logger, input='idx', org_type='numpy')
     metrics = [ get_metric(logger=logger, name=name, **met_config) for name, met_config in trconfig.metrics.items() ]
-    scores_df = pd.read_csv(trconfig.stocks.score_df, index_col="Step") \
-        if trconfig.stocks.score_df else  pd.DataFrame(columns=[], dtype=float)
+    scores_df = pd.DataFrame(columns=[], dtype=float)
+    if trconfig.stocks.score_df:
+        try:
+            scores_df = pd.read_csv(trconfig.stocks.score_df, index_col="Step")
+        except Exception:
+            logger.warning(f"Failed to load score_df: {trconfig.stocks.score_df}. Start from empty.")
+            scores_df = pd.DataFrame(columns=[], dtype=float)
     val_processes = [get_process(**process) for process in trconfig.val_loop]
     if trconfig.val_loop_add_train:
         val_processes = train_processes + val_processes
@@ -417,7 +420,6 @@ def main(config, args=None):
         now = time.time()
         optimizer.zero_grad()
         epoch = 0
-        # made configurable (fallback keeps previous default)
         steps_per_epoch = int(getattr(trconfig, "steps_per_epoch", 30000))
 
         while True:
@@ -496,6 +498,8 @@ def main(config, args=None):
     for hook in pre_hooks+post_hooks:
         hook(batch, model)
 
+
 if __name__ == '__main__':
+    # Let notate.tools.args handle --config config.yaml etc.
     config = load_config2("", default_configs=['config'])
     main(config, sys.argv)
