@@ -291,12 +291,46 @@ def set_rstate(config):
         torch.cuda.set_rng_state_all(torch.load(config.cuda))
 
 
-# ====== hooks (kept, minimal change) ======
+# ====== hooks (normalize flattened 'target/step' into alarm=...) ======
+def _normalize_alarm_kwargs(kwargs: dict):
+    """
+    Accept both styles:
+      A) alarm=dict(type=..., target=..., step=..., start=..., list=...)
+      B) flattened kwargs: target=..., step=..., start=..., list=..., every=...
+    Return: (alarm_dict_or_None, remaining_kwargs)
+    """
+    kw = dict(kwargs)  # shallow copy
+    alarm = kw.pop('alarm', None)
+
+    flat_keys = ('target', 'step', 'start', 'list', 'every', 'interval')
+    has_flat = any(k in kw for k in flat_keys)
+
+    if alarm is None and has_flat:
+        alarm = {}
+        if 'list' in kw:
+            alarm['type'] = 'list'
+            alarm['list'] = kw.pop('list')
+        else:
+            alarm['type'] = 'count'
+            if 'every' in kw:
+                alarm['step'] = kw.pop('every')
+            if 'interval' in kw:
+                alarm['step'] = kw.pop('interval')
+            if 'step' in kw:
+                alarm['step'] = kw.pop('step')
+        if 'target' in kw:
+            alarm['target'] = kw.pop('target')
+        if 'start' in kw:
+            alarm['start'] = kw.pop('start')
+    return alarm, kw
+
+
 class NoticeAlarmHook(AlarmHook):
-    def __init__(self, logger, studyname=None, **kwargs):
-        super().__init__(logger=logger, **kwargs)
+    def __init__(self, logger=None, studyname=None, **kwargs):
+        alarm, kwargs = _normalize_alarm_kwargs(kwargs)
+        super().__init__(logger=logger, alarm=alarm, **kwargs)
         if studyname is None:
-            logger.warning("studyname not specified in NoticeAlarm.")
+            self.logger.warning("studyname not specified in NoticeAlarm.")
             studyname = "(study noname)"
         self.studyname = studyname
 
@@ -362,7 +396,7 @@ def main(config, args=None):
                for name, dl_val_config in trconfig.data.vals.items()}
 
     # --------------------------
-    # prepare model (strict config check + sanitize)  [Option A]
+    # prepare model (strict config check + sanitize)
     # --------------------------
     if 'model_seed' in trconfig:
         random.seed(trconfig.model_seed)
@@ -442,17 +476,11 @@ def main(config, args=None):
     logger.info(f"[model] modules: {len(mod_keys)} defined; selected -> {len(selected)} : "
                 f"{selected[:8]}{'...' if len(selected)>8 else ''}")
 
-    # ---- Option A: pass ONLY the 'model' subtree to Model(config=...) ----
-    # Convert addict.Dict -> plain dict
-
+    # ---- kwargs validation for modules (optional but helpful) ----
     import inspect
     from notate.core.core import module_type2class
 
     def validate_model_module_kwargs(model_cfg, result_dir, logger, policy="strict"):
-        """
-        policy: "strict" = unknown/missing を検出したら停止
-                "drop"   = unknown を自動削除（警告）、missing は停止
-        """
         errs = []
         lines = []
         for name, mcfg in model_cfg.get("modules", {}).items():
@@ -466,7 +494,7 @@ def main(config, args=None):
             provided = sorted([k for k in mcfg.keys() if k != "type"])
             unknown = sorted(set(provided) - set(allowed))
             missing = sorted([p for p, pr in sig.parameters.items()
-                            if p != "self" and pr.default is inspect._empty and p not in provided])
+                              if p != "self" and pr.default is inspect._empty and p not in provided])
 
             if unknown:
                 msg = f"{name} (type={mtype}): unknown kwargs -> {unknown} ; allowed={allowed}"
@@ -481,26 +509,21 @@ def main(config, args=None):
 
             lines.append(f"{name}: type={mtype}\n  allowed={allowed}\n  provided={provided}\n  unknown={unknown}\n  missing={missing}\n")
 
-        # ダンプ
         os.makedirs(result_dir, exist_ok=True)
         with open(os.path.join(result_dir, "kwargs_validation.txt"), "w", encoding="utf-8") as f:
             f.write("\n".join(lines))
 
         if errs:
-            # 先頭のエラーで止める（詳細はファイル参照）
             raise SystemExit("[CONFIG ERROR] Module kwargs mismatch. See kwargs_validation.txt for details.\n"
-                            + "\n".join(errs[:3]))
+                             + "\n".join(errs[:3]))
 
     model_cfg = config.model
+    validate_model_module_kwargs(model_cfg, result_dir, logger, policy="strict")
 
-    # --- 呼び出し（Option A の model_cfg を作った直後に） ---
-    validate_model_module_kwargs(model_cfg, result_dir, logger, policy="strict")  # ← "drop" にすれば未知キーを自動削除
-
-    # safety: ensure modules exists and is mapping
     if not isinstance(model_cfg.get('modules', None), dict) or len(model_cfg['modules']) == 0:
         raise SystemExit("[CONFIG ERROR] (Option A) `model_cfg['modules']` is empty or not a mapping.")
 
-    # Prefer new-style signature: Model(config=<model-subtree>, logger=..., **model_cfg)
+    # build model
     model = Model(config=model_cfg, logger=logger, **model_cfg)
 
     if getattr(trconfig, 'init_weight', None):
@@ -510,12 +533,14 @@ def main(config, args=None):
     if getattr(trconfig, 'optimizer_init_weight', None):
         optimizer.load_state_dict(torch.load(trconfig.optimizer_init_weight))
 
-
     train_processes = [get_process(**process) for process in trconfig.train_loop]
 
+    # ====== Alarm hooks (normalized kwargs) ======
     class SchedulerAlarmHook(AlarmHook):
-        def __init__(self, scheduler, **kwargs):
-            super().__init__(**kwargs)
+        def __init__(self, scheduler, logger=None, **kwargs):
+            alarm, kwargs = _normalize_alarm_kwargs(kwargs)
+            super().__init__(logger=logger, alarm=alarm, **kwargs)
+            # keep original behavior
             scheduler.setdefault('last_epoch', dl_train.step - 1)
             self.scheduler = get_scheduler(optimizer, **scheduler)
 
@@ -524,30 +549,11 @@ def main(config, args=None):
 
     hook_type2class['scheduler_alarm'] = SchedulerAlarmHook
 
-    # Prepare abortion
-    abort_step = trconfig.abortion.step or float('inf')
-    abort_epoch = trconfig.abortion.epoch or float('inf')
-    abort_time = trconfig.abortion.time or float('inf')
-
-    # Prepare metrics
-    accumulators = [get_accumulator(logger=logger, **acc_config) for acc_config in trconfig.accumulators]
-    idx_accumulator = NumpyAccumulator(logger, input='idx', org_type='numpy')
-    metrics = [get_metric(logger=logger, name=name, **met_config) for name, met_config in trconfig.metrics.items()]
-
-    scores_df = pd.DataFrame(columns=[], dtype=float)
-    if getattr(trconfig.stocks, 'score_df', ""):
-        try:
-            scores_df = pd.read_csv(trconfig.stocks.score_df, index_col="Step")
-        except Exception:
-            logger.warning(f"Failed to load score_df: {trconfig.stocks.score_df}. Start from empty.")
-            scores_df = pd.DataFrame(columns=[], dtype=float)
-
-    val_processes = [get_process(**process) for process in trconfig.val_loop]
-    if trconfig.val_loop_add_train:
-        val_processes = train_processes + val_processes
-
     class ValidationAlarmHook(AlarmHook):
-        eval_steps = []
+        def __init__(self, logger=None, **kwargs):
+            alarm, kwargs = _normalize_alarm_kwargs(kwargs)
+            super().__init__(logger=logger, alarm=alarm, **kwargs)
+            self.eval_steps = []
 
         def ring(self, batch, model):
             step = batch['step']
@@ -588,8 +594,9 @@ def main(config, args=None):
     hook_type2class['validation_alarm'] = ValidationAlarmHook
 
     class CheckpointAlarm(AlarmHook):
-        def __init__(self, **kwargs):
-            super().__init__(**kwargs)
+        def __init__(self, logger=None, **kwargs):
+            alarm, kwargs = _normalize_alarm_kwargs(kwargs)
+            super().__init__(logger=logger, alarm=alarm, **kwargs)
             os.makedirs(f"{result_dir}/checkpoints", exist_ok=True)
             self.checkpoint_steps = []
 
@@ -597,7 +604,7 @@ def main(config, args=None):
             if batch['step'] in self.checkpoint_steps:
                 return
             checkpoint_dir = f"{result_dir}/checkpoints/{batch['step']}"
-            logger.info(f"Making checkpoint at step {batch['step']:6>}...")
+            self.logger.info(f"Making checkpoint at step {batch['step']:6>}...")
             if len(self.checkpoint_steps) > 0:
                 shutil.rmtree(f"{result_dir}/checkpoints/{self.checkpoint_steps[-1]}/")
             os.makedirs(checkpoint_dir, exist_ok=True)
@@ -609,6 +616,28 @@ def main(config, args=None):
             self.checkpoint_steps.append(batch['step'])
 
     hook_type2class['checkpoint_alarm'] = CheckpointAlarm
+
+    # Prepare abortion
+    abort_step = trconfig.abortion.step or float('inf')
+    abort_epoch = trconfig.abortion.epoch or float('inf')
+    abort_time = trconfig.abortion.time or float('inf')
+
+    # Prepare metrics
+    accumulators = [get_accumulator(logger=logger, **acc_config) for acc_config in trconfig.accumulators]
+    idx_accumulator = NumpyAccumulator(logger, input='idx', org_type='numpy')
+    metrics = [get_metric(logger=logger, name=name, **met_config) for name, met_config in trconfig.metrics.items()]
+
+    scores_df = pd.DataFrame(columns=[], dtype=float)
+    if getattr(trconfig.stocks, 'score_df', ""):
+        try:
+            scores_df = pd.read_csv(trconfig.stocks.score_df, index_col="Step")
+        except Exception:
+            logger.warning(f"Failed to load score_df: {trconfig.stocks.score_df}. Start from empty.")
+            scores_df = pd.DataFrame(columns=[], dtype=float)
+
+    val_processes = [get_process(**process) for process in trconfig.val_loop]
+    if trconfig.val_loop_add_train:
+        val_processes = train_processes + val_processes
 
     pre_hooks = [get_hook(logger=logger, result_dir=result_dir, **hconfig) for hconfig in trconfig.pre_hooks.values()]
     post_hooks = [get_hook(logger=logger, result_dir=result_dir, **hconfig) for hconfig in trconfig.post_hooks.values()]
