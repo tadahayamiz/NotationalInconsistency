@@ -276,6 +276,19 @@ def strict_validate_special_tokens(cfg):
         raise RuntimeError("[strict] dec_supporter.end_token must be 2")
 
 
+# --- add: data_rotation のstrict検証 ---
+def strict_validate_data_rotation(cfg):
+    dr = getattr(cfg.training, 'data_rotation', Dict())
+    enable = bool(getattr(dr, 'enable', False))
+    if not enable:
+        return
+    # ONなら必須キーの検査
+    if int(getattr(dr, 'steps_per_epoch', 0) or 0) <= 0:
+        raise RuntimeError("[strict] training.data_rotation.steps_per_epoch must be > 0 when enable=true")
+    if not getattr(dr, 'ran_tmpl', None) or not getattr(dr, 'can_tmpl', None):
+        raise RuntimeError("[strict] training.data_rotation.ran_tmpl/can_tmpl are required when enable=true")
+
+
 # ====== random state I/O (kept) ======
 def save_rstate(dirname):
     os.makedirs(dirname, exist_ok=True)
@@ -353,6 +366,7 @@ hook_type2class['notice_alarm'] = NoticeAlarmHook
 def main(config, args=None):
     # strict: voc.py の契約と一致しているか検証
     strict_validate_special_tokens(config)
+    strict_validate_data_rotation(config) 
 
     # substitute variables (kept)
     config = subs_vars(config, {"$TIMESTAMP": timestamp()})
@@ -378,16 +392,26 @@ def main(config, args=None):
         logger.error(str(e))
         raise
 
-    # helper for epoch-wise dataloader rewrite (strict: ファイル存在必須)
-    def update_dataloader_for_epoch(epoch, config):
-        new_ran = f"./data/Pubchem_chunk_pro_{epoch}_ran.pkl"
-        new_can = f"./data/Pubchem_chunk_pro_{epoch}_can.pkl"
+    # helper for epoch-wise dataloader rewrite
+    def update_dataloader_for_epoch(epoch: int, cfg: Dict):
+        dr = getattr(cfg.training, 'data_rotation', Dict())
+        enable = bool(getattr(dr, 'enable', False))
+        if not enable:
+            # 無効時：常に現行のtrain設定を再利用（実質何もしない）
+            return get_dataloader(logger=logger, device=DEVICE, **cfg.training.data.train)
+
+        # 有効時：テンプレートからパスを生成し、存在を厳格チェック
+        ran_tmpl = str(getattr(dr, 'ran_tmpl'))
+        can_tmpl = str(getattr(dr, 'can_tmpl'))
+        new_ran = ran_tmpl.format(epoch=epoch)
+        new_can = can_tmpl.format(epoch=epoch)
         if not (_file_exists(new_ran) and _file_exists(new_can)):
             raise SystemExit(f"[strict] epoch {epoch}: missing data files: {new_ran} / {new_can}")
-        updated_config = config.copy()
-        _dset(updated_config, "training.data.train.datasets.datasets.input.path_list", new_ran)
-        _dset(updated_config, "training.data.train.datasets.datasets.target.path_list", new_can)
-        return get_dataloader(logger=logger, device=DEVICE, **updated_config.training.data.train)
+
+        updated_cfg = cfg.copy()
+        _dset(updated_cfg, "training.data.train.datasets.datasets.input.path_list", new_ran)
+        _dset(updated_cfg, "training.data.train.datasets.datasets.target.path_list", new_can)
+        return get_dataloader(logger=logger, device=DEVICE, **updated_cfg.training.data.train)
 
     # environment
     DEVICE = torch.device('cuda', index=trconfig.gpuid or 0) \
@@ -719,13 +743,17 @@ def main(config, args=None):
                 model.save_state_dict(f"{result_dir}/error/model")
                 raise e
 
-            # epoch-wise dataloader update (strict file check)
-            if dl_train.step % steps_per_epoch == 0:
+            # epoch-wise dataloader update (configで制御)
+            dr = getattr(trconfig, 'data_rotation', Dict())
+            rotate_enable = bool(getattr(dr, 'enable', False))
+            steps_per_epoch_cfg = int(getattr(dr, 'steps_per_epoch', 0) or 0)
+
+            if rotate_enable and steps_per_epoch_cfg > 0 and (dl_train.step % steps_per_epoch_cfg == 0):
                 epoch += 1
                 del dl_train
                 gc.collect()
                 dl_train = update_dataloader_for_epoch(epoch, config)
-                dl_train.step = epoch * steps_per_epoch
+                dl_train.step = epoch * steps_per_epoch_cfg
 
             # grad stats (kept)
             grad_max = grad_min = 0

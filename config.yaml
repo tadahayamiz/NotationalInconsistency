@@ -42,7 +42,9 @@ model:
 
     encoder:
       type: TransformerEncoder
+      enable_nested_tensor: false   # ← 追加（黙らせる）
       layer:
+        norm_first: false  
         d_model: 512
         nhead: 8
         d_ff_factor: 4
@@ -203,6 +205,13 @@ training:
   deterministic: false
   runner_seed: 111
   model_seed: 111
+
+  # ★ 追加: エポックごとのデータ差し替えを制御
+  data_rotation:
+    enable: false            # ← デフォルトは無効（単一PKLで完走）
+    steps_per_epoch: 1000    # ← 有効時のみ参照。1エポック=このステップ数
+    ran_tmpl: "./data/Pubchem_chunk_pro_{epoch}_ran.pkl"
+    can_tmpl: "./data/Pubchem_chunk_pro_{epoch}_can.pkl"
 
   data:
     train:
