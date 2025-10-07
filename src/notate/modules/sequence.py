@@ -38,7 +38,7 @@ class TeacherForcer(nn.Module):
         input: (any)[..., length-1, ...]
         target: [..., length-1, ...]
         """
-        return_ = input[self.input_slices], input[self.target_slices]
+        return_ = input[tuple(self.input_slices)], input[tuple(self.target_slices)]
         if return_len:
             return_ += (return_[-1].shape[self.length_dim], )  
         return return_

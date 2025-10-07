@@ -155,6 +155,18 @@ class Model(nn.Module):
         raise KeyError(f"Model has no submodule/attr named '{key}'")
 
 
+    # --- add: safe checkpoint helper on Model ---
+    def save_state_dict(self, out_prefix: str):
+        """Save model weights to <out_prefix>.pt (parents auto-created)."""
+        import torch
+        from pathlib import Path
+        out_path = Path(f"{out_prefix}.pt")
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(self.state_dict(), out_path)
+
+
+
+
 # ===== Legacy API compatibility for modules expecting older helpers =====
 # - Provide function_config2func / init_config2func / module_type2class
 # - Define ONLY if they are missing to avoid overriding project-specific ones.
