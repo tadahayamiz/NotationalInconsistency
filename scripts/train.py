@@ -388,10 +388,7 @@ def main(config, args=None):
                          f"Dumped model section to: {dump_path}")
 
     # ---- sanitize use_modules / omit_modules so that selection is non-empty ----
-    # exact keys present in model.modules
     mod_keys = list(mods.keys())
-
-    # normalize lists
     use = config.model.get('use_modules', None)
     omit = config.model.get('omit_modules', None)
     if use is not None and not isinstance(use, (list, tuple)):
@@ -399,15 +396,12 @@ def main(config, args=None):
     if omit is not None and not isinstance(omit, (list, tuple)):
         omit = [omit]
 
-    # drop unknown names from use_modules (warn)
     if use is not None:
         unknown_use = [m for m in use if m not in mod_keys]
         if len(unknown_use) > 0:
             logger.warning(f"[config] unknown names in model.use_modules -> dropped: {unknown_use}")
             use = [m for m in use if m in mod_keys]
-            config.model.use_modules = use  # write-back
-
-        # if all were unknown and filtered out, fall back to "use all"
+            config.model.use_modules = use
         if len(use) == 0:
             logger.warning("[config] model.use_modules became empty after filtering; falling back to ALL modules.")
             try:
@@ -417,17 +411,15 @@ def main(config, args=None):
                     del config.model['use_modules']
                 except Exception:
                     config.model.use_modules = None
-            use = None  # treat as "use all"
+            use = None
 
-    # drop unknown names from omit_modules (warn)
     if omit is not None:
         unknown_omit = [m for m in omit if m not in mod_keys]
         if len(unknown_omit) > 0:
             logger.warning(f"[config] unknown names in model.omit_modules -> dropped: {unknown_omit}")
             omit = [m for m in omit if m in mod_keys]
-            config.model.omit_modules = omit  # write-back
+            config.model.omit_modules = omit
 
-    # compute the actually-selected module names
     selected = []
     for k in mod_keys:
         if use is not None and k not in use:
@@ -436,7 +428,6 @@ def main(config, args=None):
             continue
         selected.append(k)
 
-    # if selection is empty, fail early with a helpful dump
     if len(selected) == 0:
         dump_path = os.path.join(result_dir, "model_modules_filter_dump.yaml")
         with open(dump_path, "w", encoding="utf-8") as f:
@@ -448,10 +439,18 @@ def main(config, args=None):
         raise SystemExit("[CONFIG ERROR] No modules remain after applying use_modules/omit_modules. "
                          f"Check names. Dumped filter info to: {dump_path}")
 
-    logger.info(f"[model] modules: {len(mod_keys)} defined; selected -> {len(selected)} : {selected[:8]}{'...' if len(selected)>8 else ''}")
+    logger.info(f"[model] modules: {len(mod_keys)} defined; selected -> {len(selected)} : "
+                f"{selected[:8]}{'...' if len(selected)>8 else ''}")
 
-    # ---- build model (NOTE: current notate.core.core.Model requires `config`) ----
-    model = Model(config=config, logger=logger, **config.model)
+    # ---- IMPORTANT ----
+    # Model 側は `dict` 厳格チェックをしているため、ここで純 Python dict に落としてから渡す
+    try:
+        config_native = config.to_dict()                # addict.Dict -> plain dict
+    except Exception:
+        config_native = yaml.safe_load(yaml.dump(config))  # 最終手段
+
+    # NOTE: current notate.core.core.Model requires `config`
+    model = Model(config=config_native, logger=logger, **config_native['model'])
 
     if getattr(trconfig, 'init_weight', None):
         model.load(**trconfig.init_weight)
