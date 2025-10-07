@@ -20,22 +20,21 @@ model:
   modules:
     teacherforcer:
       type: TeacherForcer
-      length_dim: 1   # ← required (was: ratio)
+      length_dim: 1
 
     masker:
-      type: MaskMaker # ← SequenceMasker ではなくこちら
+      type: MaskMaker
+      mask_token: 3         # ← 語彙の[MASK]トークンIDに合わせる。例では3
 
-    # token embedding + positional encoding
     enc_embedding:
       type: PositionalEmbedding
       embedding:
         type: torch.nn.Embedding
-        num_embeddings: 400   # (= vocab size)
-        embedding_dim: 512    # (= d_model)
+        num_embeddings: 400
+        embedding_dim: 512
       max_len: 256
       dropout: 0.0
 
-    # Transformer encoder expects a "layer" template + n_layer
     encoder:
       type: TransformerEncoder
       layer:
@@ -44,34 +43,24 @@ model:
         nhead: 8
         dropout: 0.1
       n_layer: 6
-      # norm / init は必要なら追記（未指定で良い実装が多い）
 
     pooler:
-      type: MeanPooler  # そのまま（必要に応じて変更可）
+      type: MeanPooler
 
     latent2mu:
       type: MLP
-      in_features: 512
-      hidden_features: [512]
-      out_features: 512
-      activation: gelu
+      n_embd: 512
 
     latent2var:
       type: MLP
-      in_features: 512
-      hidden_features: [512]
-      out_features: 512
-      activation: gelu
+      n_embd: 512
 
     vae:
-      type: VAE  # 既存のまま（必要なら MinusD_KLLoss などと組み合わせ）
+      type: VAE
 
     latent2dec:
       type: MLP
-      in_features: 512
-      hidden_features: [512]
-      out_features: 512
-      activation: gelu
+      n_embd: 512
 
     dec_embedding:
       type: PositionalEmbedding
@@ -93,16 +82,14 @@ model:
       max_len: 256
 
     dec2proba:
-      type: MLP   # LinearClassifier が未登録の場合に備え MLP で代替
-      in_features: 512
-      hidden_features: []
-      out_features: 400
-      activation: none
+      type: MLP
+      n_embd: 512
 
     dec_supporter:
       type: GreedyDecoder
       start_token: 1
-      end_token: 2     # pad_token / max_len は渡さない（未知キー）
+      end_token: 2
+
 
   use_modules:
     - teacherforcer
