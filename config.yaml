@@ -301,19 +301,30 @@ training:
   pre_hooks:
     lr_scheduler:
       type: scheduler_alarm
-      target: step
-      every: 1
-      scheduler: {type: warmup, warmup: 800}
+      alarm:
+        type: count     # ← 1ステップごとに発火
+        target: step
+        step: 1
+        start: 0
+      scheduler:
+        type: warmup
+        warmup: 800
 
   post_hooks:
     validate:
       type: validation_alarm
-      target: step
-      every: 1000
+      alarm:
+        type: count     # ← 1000ステップごとに検証
+        target: step
+        step: 1000
+      # end: true  # 使わないなら省略可
+
     checkpoint:
       type: checkpoint_alarm
-      target: step
-      every: 5000
+      alarm:
+        type: count     # ← 5000ステップごとに保存
+        target: step
+        step: 5000
 
   # === Loops: 元の流れに戻す（prepare_cell_forward / force を復元） ===
   train_loop:
