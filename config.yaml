@@ -74,7 +74,7 @@ model:
         nhead: 8
         dropout: 0.1
       n_layer: 6
-      # max_len は実装によって unknown の可能性があるため外しています
+      max_len: 256      # ← これが必須
 
     dec2proba:
       type: MLP
