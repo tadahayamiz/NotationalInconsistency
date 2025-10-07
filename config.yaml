@@ -42,7 +42,6 @@ model:
 
     encoder:
       type: TransformerEncoder
-      enable_nested_tensor: false   # ← 追加（黙らせる）
       layer:
         norm_first: false  
         d_model: 512
