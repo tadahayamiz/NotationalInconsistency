@@ -362,7 +362,7 @@ def main(config, args=None):
                for name, dl_val_config in trconfig.data.vals.items()}
 
     # --------------------------
-    # prepare model (strict config check + sanitize)
+    # prepare model (strict config check + sanitize)  [Option A]
     # --------------------------
     if 'model_seed' in trconfig:
         random.seed(trconfig.model_seed)
@@ -442,15 +442,28 @@ def main(config, args=None):
     logger.info(f"[model] modules: {len(mod_keys)} defined; selected -> {len(selected)} : "
                 f"{selected[:8]}{'...' if len(selected)>8 else ''}")
 
-    # ---- IMPORTANT ----
-    # Model 側は `dict` 厳格チェックをしているため、ここで純 Python dict に落としてから渡す
+    # ---- Option A: pass ONLY the 'model' subtree to Model(config=...) ----
+    # Convert addict.Dict -> plain dict
     try:
-        config_native = config.to_dict()                # addict.Dict -> plain dict
+        model_cfg = config.model.to_dict()
     except Exception:
-        config_native = yaml.safe_load(yaml.dump(config))  # 最終手段
+        model_cfg = yaml.safe_load(yaml.dump(config.model))
 
-    # NOTE: current notate.core.core.Model requires `config`
-    model = Model(config=config_native, logger=logger, **config_native['model'])
+    # safety: ensure modules exists and is mapping
+    if not isinstance(model_cfg.get('modules', None), dict) or len(model_cfg['modules']) == 0:
+        raise SystemExit("[CONFIG ERROR] (Option A) `model_cfg['modules']` is empty or not a mapping.")
+
+    # Prefer new-style signature: Model(config=<model-subtree>, logger=..., **model_cfg)
+    try:
+        model = Model(config=model_cfg, logger=logger, **model_cfg)
+    except TypeError:
+        # Fallback for old-style signature: Model(logger=..., modules=..., ...)
+        model = Model(logger=logger,
+                      modules=model_cfg['modules'],
+                      use_modules=model_cfg.get('use_modules'),
+                      omit_modules=model_cfg.get('omit_modules'),
+                      seed=model_cfg.get('seed'),
+                      init=model_cfg.get('init', {}))
 
     if getattr(trconfig, 'init_weight', None):
         model.load(**trconfig.init_weight)
