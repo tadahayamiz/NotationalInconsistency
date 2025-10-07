@@ -40,6 +40,7 @@ model:
         nhead: 8
         dropout: 0.1
         activation: gelu    # ← これを追加
+        d_ff_factor: 4
       n_layer: 6
 
     pooler:
@@ -75,6 +76,7 @@ model:
         nhead: 8
         dropout: 0.1
         activation: gelu    # ← これを追加
+        d_ff_factor: 4
       n_layer: 6
       max_len: 256
 
