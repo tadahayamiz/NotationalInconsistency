@@ -5,7 +5,6 @@ from .sequence import *
 from .vae import *
 from .tunnel import *
 from .poolers import *
-from .pipeline import PipelineModule  # ★ NEW: pipeline runner (Plan A)
 
 # ---- central registry shared with core ----
 from ..core.core import module_type2class
