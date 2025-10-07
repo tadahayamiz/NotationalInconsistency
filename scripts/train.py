@@ -444,10 +444,60 @@ def main(config, args=None):
 
     # ---- Option A: pass ONLY the 'model' subtree to Model(config=...) ----
     # Convert addict.Dict -> plain dict
+
+    import inspect
+    from notate.core.core import module_type2class
+
+    def validate_model_module_kwargs(model_cfg, result_dir, logger, policy="strict"):
+        """
+        policy: "strict" = unknown/missing を検出したら停止
+                "drop"   = unknown を自動削除（警告）、missing は停止
+        """
+        errs = []
+        lines = []
+        for name, mcfg in model_cfg.get("modules", {}).items():
+            mtype = mcfg.get("type")
+            if mtype not in module_type2class:
+                errs.append(f"{name}: unknown module type '{mtype}'. Registered: {sorted(list(module_type2class.keys()))[:20]} ...")
+                continue
+            cls = module_type2class[mtype]
+            sig = inspect.signature(cls.__init__)
+            allowed = [p for p in sig.parameters.keys() if p != "self"]
+            provided = sorted([k for k in mcfg.keys() if k != "type"])
+            unknown = sorted(set(provided) - set(allowed))
+            missing = sorted([p for p, pr in sig.parameters.items()
+                            if p != "self" and pr.default is inspect._empty and p not in provided])
+
+            if unknown:
+                msg = f"{name} (type={mtype}): unknown kwargs -> {unknown} ; allowed={allowed}"
+                if policy == "drop":
+                    for u in unknown:
+                        del mcfg[u]
+                    logger.warning("[kwargs:drop] " + msg)
+                else:
+                    errs.append(msg)
+            if missing:
+                errs.append(f"{name} (type={mtype}): missing required -> {missing} ; allowed={allowed}")
+
+            lines.append(f"{name}: type={mtype}\n  allowed={allowed}\n  provided={provided}\n  unknown={unknown}\n  missing={missing}\n")
+
+        # ダンプ
+        os.makedirs(result_dir, exist_ok=True)
+        with open(os.path.join(result_dir, "kwargs_validation.txt"), "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))
+
+        if errs:
+            # 先頭のエラーで止める（詳細はファイル参照）
+            raise SystemExit("[CONFIG ERROR] Module kwargs mismatch. See kwargs_validation.txt for details.\n"
+                            + "\n".join(errs[:3]))
+
     try:
         model_cfg = config.model.to_dict()
     except Exception:
         model_cfg = yaml.safe_load(yaml.dump(config.model))
+
+    # --- 呼び出し（Option A の model_cfg を作った直後に） ---
+    validate_model_module_kwargs(model_cfg, result_dir, logger, policy="strict")  # ← "drop" にすれば未知キーを自動削除
 
     # safety: ensure modules exists and is mapping
     if not isinstance(model_cfg.get('modules', None), dict) or len(model_cfg['modules']) == 0:
