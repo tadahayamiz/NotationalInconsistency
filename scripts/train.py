@@ -1,10 +1,7 @@
-import sys, os
-"""Runner-side hardening (workers untouched)
- - Import from `notate.*` (no external `tools` package needed)
- - Preflight (inline) filters token pickles by length and rewrites paths
- - Keeps original training loop behavior as much as possible
-"""
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 
+import sys, os
 import pickle
 import time
 import yaml
@@ -14,11 +11,10 @@ import pandas as pd
 import torch
 import random
 import shutil
-from collections import defaultdict
 from tqdm import tqdm
 import gc
 
-# ==== import from notate.* (Colab / editable install friendly) ====
+# ==== import from notate.* (editable install friendly) ====
 from notate.tools.path import make_result_dir, timestamp
 from notate.tools.logger import default_logger
 from notate.tools.args import load_config2, subs_vars
@@ -301,10 +297,12 @@ class NoticeAlarmHook(AlarmHook):
         super().__init__(logger=logger, **kwargs)
         if studyname is None:
             logger.warning("studyname not specified in NoticeAlarm.")
-            studyname =  "(study noname)"
+            studyname = "(study noname)"
         self.studyname = studyname
+
     def ring(self, batch, model):
         print("ring")
+
 
 hook_type2class['notice_alarm'] = NoticeAlarmHook
 
@@ -316,16 +314,18 @@ def main(config, args=None):
 
     # result dir & logger
     result_dir = make_result_dir(**trconfig.result_dir)
-    logger = default_logger(result_dir+"/log.txt", trconfig.verbose.loglevel.stream, trconfig.verbose.loglevel.file)
-    with open(result_dir+"/config.yaml", mode='w') as f:
-        yaml.dump(config.to_dict(), f, sort_keys=False)
+    logger = default_logger(result_dir + "/log.txt",
+                            trconfig.verbose.loglevel.stream,
+                            trconfig.verbose.loglevel.file)
+    with open(result_dir + "/config.yaml", mode='w', encoding="utf-8") as f:
+        yaml.dump(config.to_dict(), f, sort_keys=False, allow_unicode=True)
     if args is not None:
         logger.warning(f"options: {' '.join(args)}")
 
     # runner-side seed
     _seed_everything(int(trconfig.get('runner_seed', trconfig.get('model_seed', 0))))
 
-    # --- runner-side preflight (new) ---
+    # --- runner-side preflight (train/vals) ---
     try:
         config = run_preflight_and_rewrite_paths(config, result_dir, logger)
     except SystemExit as e:
@@ -359,20 +359,41 @@ def main(config, args=None):
     # prepare data
     dl_train = get_dataloader(logger=logger, device=DEVICE, **trconfig.data.train)
     dls_val = {name: get_dataloader(logger=logger, device=DEVICE, **dl_val_config)
-        for name, dl_val_config in trconfig.data.vals.items()}
+               for name, dl_val_config in trconfig.data.vals.items()}
 
-    # prepare model
+    # prepare model (strict config check)
     if 'model_seed' in trconfig:
         random.seed(trconfig.model_seed)
         np.random.seed(trconfig.model_seed)
         torch.manual_seed(trconfig.model_seed)
-        torch.cuda.manual_seed(trconfig.model_seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed(trconfig.model_seed)
+
+    # ---- strict check for model config ----
+    if not isinstance(config.get('model', None), Dict):
+        raise SystemExit("[CONFIG ERROR] top-level `model` section is missing in your config.")
+
+    mods = config.model.get('modules', None)
+    if not isinstance(mods, (dict, Dict)) or len(mods) == 0:
+        # dump the section for quick debugging
+        dump_path = os.path.join(result_dir, "model_section_dump.yaml")
+        try:
+            with open(dump_path, "w", encoding="utf-8") as f:
+                yd = config.model.to_dict() if hasattr(config.model, "to_dict") else dict(config.model)
+                yaml.dump(yd, f, sort_keys=False, allow_unicode=True)
+        except Exception:
+            pass
+        raise SystemExit("[CONFIG ERROR] `model.modules` must be a non-empty mapping. "
+                         f"Dumped model section to: {dump_path}")
+
+    # NOTE: 現行の notate.core.core.Model は `config` を必須引数に取ります
     model = Model(config=config, logger=logger, **config.model)
-    if trconfig.init_weight:
+
+    if getattr(trconfig, 'init_weight', None):
         model.load(**trconfig.init_weight)
     model.to(DEVICE)
     optimizer = get_optimizer(params=model.parameters(), **trconfig.optimizer)
-    if trconfig.optimizer_init_weight:
+    if getattr(trconfig, 'optimizer_init_weight', None):
         optimizer.load_state_dict(torch.load(trconfig.optimizer_init_weight))
 
     train_processes = [get_process(**process) for process in trconfig.train_loop]
@@ -382,8 +403,10 @@ def main(config, args=None):
             super().__init__(**kwargs)
             scheduler.setdefault('last_epoch', dl_train.step - 1)
             self.scheduler = get_scheduler(optimizer, **scheduler)
+
         def ring(self, batch, model):
             self.scheduler.step()
+
     hook_type2class['scheduler_alarm'] = SchedulerAlarmHook
 
     # Prepare abortion
@@ -392,46 +415,52 @@ def main(config, args=None):
     abort_time = trconfig.abortion.time or float('inf')
 
     # Prepare metrics
-    accumulators = [ get_accumulator(logger=logger, **acc_config) for acc_config in trconfig.accumulators ]
+    accumulators = [get_accumulator(logger=logger, **acc_config) for acc_config in trconfig.accumulators]
     idx_accumulator = NumpyAccumulator(logger, input='idx', org_type='numpy')
-    metrics = [ get_metric(logger=logger, name=name, **met_config) for name, met_config in trconfig.metrics.items() ]
+    metrics = [get_metric(logger=logger, name=name, **met_config) for name, met_config in trconfig.metrics.items()]
+
     scores_df = pd.DataFrame(columns=[], dtype=float)
-    if trconfig.stocks.score_df:
+    if getattr(trconfig.stocks, 'score_df', ""):
         try:
             scores_df = pd.read_csv(trconfig.stocks.score_df, index_col="Step")
         except Exception:
             logger.warning(f"Failed to load score_df: {trconfig.stocks.score_df}. Start from empty.")
             scores_df = pd.DataFrame(columns=[], dtype=float)
+
     val_processes = [get_process(**process) for process in trconfig.val_loop]
     if trconfig.val_loop_add_train:
         val_processes = train_processes + val_processes
 
     class ValidationAlarmHook(AlarmHook):
         eval_steps = []
+
         def ring(self, batch, model):
             step = batch['step']
-            if step in self.eval_steps: return
+            if step in self.eval_steps:
+                return
             self.logger.info(f"Validating step{step:7} ...")
             model.eval()
-            for x in metrics+accumulators+[idx_accumulator]: x.init()
+            for x in metrics + accumulators + [idx_accumulator]:
+                x.init()
             with torch.no_grad():
                 for key, dl in dls_val.items():
                     for metric in metrics:
                         metric.set_val_name(key)
                     for batch0 in dl:
                         batch0 = model(batch0, processes=val_processes)
-                        for x in metrics+accumulators+[idx_accumulator]:
+                        for x in metrics + accumulators + [idx_accumulator]:
                             x(batch0)
                         del batch0
                         torch.cuda.empty_cache()
 
             scores = {}
-            for metric in metrics: scores = metric.calc(scores)
+            for metric in metrics:
+                scores = metric.calc(scores)
             batch.update(scores)
             for score_lb, score in scores.items():
                 self.logger.info(f"  {score_lb:20}: {score:.3f}")
                 scores_df.loc[step, score_lb] = score
-            scores_df.to_csv(result_dir+"/val_score.csv", index_label="Step")
+            scores_df.to_csv(result_dir + "/val_score.csv", index_label="Step")
 
             idx = idx_accumulator.accumulate()
             idx = np.argsort(idx)
@@ -440,6 +469,7 @@ def main(config, args=None):
 
             self.eval_steps.append(step)
             model.train()
+
     hook_type2class['validation_alarm'] = ValidationAlarmHook
 
     class CheckpointAlarm(AlarmHook):
@@ -447,8 +477,10 @@ def main(config, args=None):
             super().__init__(**kwargs)
             os.makedirs(f"{result_dir}/checkpoints", exist_ok=True)
             self.checkpoint_steps = []
+
         def ring(self, batch, model: Model):
-            if batch['step'] in self.checkpoint_steps: return
+            if batch['step'] in self.checkpoint_steps:
+                return
             checkpoint_dir = f"{result_dir}/checkpoints/{batch['step']}"
             logger.info(f"Making checkpoint at step {batch['step']:6>}...")
             if len(self.checkpoint_steps) > 0:
@@ -457,16 +489,17 @@ def main(config, args=None):
             model.save_state_dict(f"{result_dir}/models/{batch['step']}")
             torch.save(optimizer.state_dict(), f"{checkpoint_dir}/optimizer.pth")
             dl_train.checkpoint(f"{checkpoint_dir}/dataloader_train")
-            scores_df.to_csv(checkpoint_dir+"/val_score.csv", index_label="Step")
+            scores_df.to_csv(checkpoint_dir + "/val_score.csv", index_label="Step")
             save_rstate(f"{checkpoint_dir}/rstate")
             self.checkpoint_steps.append(batch['step'])
+
     hook_type2class['checkpoint_alarm'] = CheckpointAlarm
 
     pre_hooks = [get_hook(logger=logger, result_dir=result_dir, **hconfig) for hconfig in trconfig.pre_hooks.values()]
     post_hooks = [get_hook(logger=logger, result_dir=result_dir, **hconfig) for hconfig in trconfig.post_hooks.values()]
 
     # load random state
-    set_rstate(trconfig.rstate)
+    set_rstate(getattr(trconfig, 'rstate', Dict()))
 
     # training
     training_start = time.time()
@@ -484,9 +517,9 @@ def main(config, args=None):
                 hook(batch, model)
 
             if dl_train.step >= abort_step \
-                or now - training_start >= abort_time \
-                or dl_train.epoch >= abort_epoch:
-                logger.warning(f"Use of abort_step, abort_time, abort_epoch is deprecated. Use AbortHook instead.")
+               or now - training_start >= abort_time \
+               or dl_train.epoch >= abort_epoch:
+                logger.warning("Use of abort_step, abort_time, abort_epoch is deprecated. Use AbortHook instead.")
                 batch['end'] = True
             if 'end' in batch:
                 break
@@ -524,8 +557,9 @@ def main(config, args=None):
             grad_mean = 0
             grad_numel = 0
             for p in model.parameters():
-                if p.grad is None: continue
-                grad_mean += torch.sum(p.grad**2)
+                if p.grad is None:
+                    continue
+                grad_mean += torch.sum(p.grad ** 2)
                 grad_numel += p.grad.numel()
                 grad_max = max(grad_max, p.grad.max().item())
                 grad_min = min(grad_min, p.grad.min().item())
@@ -549,13 +583,14 @@ def main(config, args=None):
                 hook(batch, model)
             del batch, loss
             torch.cuda.empty_cache()
-            if pbar is not None: pbar.update(1)
+            if pbar is not None:
+                pbar.update(1)
 
-    for hook in pre_hooks+post_hooks:
+    for hook in pre_hooks + post_hooks:
         hook(batch, model)
 
 
 if __name__ == '__main__':
-    # Let notate.tools.args handle --config config.yaml etc.
-    config = load_config2("", default_configs=['config'])
+    # 重要: 既定の 'config' を重ねない。CLI 指定の --config のみを採用
+    config = load_config2("", default_configs=[])
     main(config, sys.argv)
