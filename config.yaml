@@ -146,6 +146,16 @@ model:
       type: Affine
       weight: 0.001
 
+    transpose_mask:
+      type: Tunnel
+      input_size: [max_len, batch_size]      # もともとの mask 形状 [T,B] を想定
+      layers:
+        - type: function
+          function:
+            type: transpose
+            dim0: 0
+            dim1: 1                           # => [B, T] へ転置
+
   # （use_modules は明示不要ですが、残しても実害はありません）
   use_modules:
     - teacherforcer
@@ -164,6 +174,7 @@ model:
     - sequencece
     - -d_kl
     - -d_kl_factor
+    - transpose_mask
 
   init:
     type: default
@@ -314,6 +325,10 @@ training:
       input: input
       output: input_padding_mask
 
+    - module: transpose_mask
+      input: input_padding_mask
+      output: input_padding_mask2
+
     - module: enc_embedding
       input: input
       output: input_emb
@@ -321,11 +336,6 @@ training:
     - module: encoder
       input: [input_emb, input_padding_mask]
       output: memory
-
-    - type: function
-      function: {type: transpose, dim0: 0, dim1: 1}
-      input: input_padding_mask
-      output: input_padding_mask2
 
     - module: pooler
       input: [memory, input_padding_mask2]
@@ -386,8 +396,7 @@ training:
       input: [input, input_padding_mask]
       output: memory
 
-    - type: function
-      function: {type: transpose, dim0: 0, dim1: 1}
+    - module: transpose_mask
       input: input_padding_mask
       output: input_padding_mask2
 
