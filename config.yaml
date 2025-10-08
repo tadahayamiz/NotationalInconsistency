@@ -313,6 +313,10 @@ training:
 
   # hooks は runner 側実装（train.py）に依存するため簡素化を維持
   pre_hooks:
+    abortion:
+      type: epoch_abort
+      threshold: 2          # ← 2エポックで終了
+
     lr_scheduler:
       type: scheduler_alarm
       alarm:
@@ -325,10 +329,6 @@ training:
         warmup: 800
 
   post_hooks:
-    abortion:
-      type: epoch_abort
-      threshold: 2          # ← 2エポックで終了
-
     validate:
       type: validation_alarm
       alarm:
