@@ -1,85 +1,144 @@
-"""Neural network modules: transformers, VAE, poolers, tunnels, and pipeline runner."""
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+src/notate/modules/__init__.py
 
-# ---- import concrete module groups ----
+Purpose:
+    Unified registry and import point for neural network modules used in `notate`:
+      - Transformer-based components
+      - VAE modules
+      - Poolers
+      - Tunnels
+      - Minimal constant Affine scaling (for factors like -d_kl_factor)
+
+Notes:
+    - Style unified to PEP8 / Black (88 cols) with English comments/docstrings.
+    - Explicitly registers all modules into the shared `module_type2class` registry
+      imported from `notate.core.core`.
+    - No behavior-changing edits were made intentionally.
+
+Requires:
+    Python >= 3.9
+"""
+
+from __future__ import annotations
+
+# ===== Import module groups =====
 from .sequence import *
 from .vae import *
 from .tunnel import *
 from .poolers import *
 
-# ---- central registry shared with core ----
+# ===== Shared registry =====
 from ..core.core import module_type2class
 
-# ---- register common torch losses (convenience) ----
+# ===== Register common torch losses =====
+import torch
 import torch.nn as nn
+
 for cls in [nn.MSELoss, nn.BCEWithLogitsLoss]:
     module_type2class[cls.__name__] = cls
 
-# ---- register sequence modules ----
+# ===== Register sequence / transformer modules =====
 for cls in [
-    TeacherForcer, MaskMaker, SelfAttentionLayer, PositionalEmbedding,
-    TransformerEncoder, TransformerDecoder, AttentionDecoder, TransformerLMDecoder,
-    GreedyDecoder, CrossEntropyLoss, BCELoss, MLP
+    TeacherForcer,
+    MaskMaker,
+    SelfAttentionLayer,
+    PositionalEmbedding,
+    TransformerEncoder,
+    TransformerDecoder,
+    AttentionDecoder,
+    TransformerLMDecoder,
+    GreedyDecoder,
+    CrossEntropyLoss,
+    BCELoss,
+    MLP,
 ]:
     module_type2class[cls.__name__] = cls
 
-# ---- register VAE modules ----
+# ===== Register VAE modules =====
 for cls in [VAE, MinusD_KLLoss, Random]:
     module_type2class[cls.__name__] = cls
 
-# ---- register tunnel modules ----
+# ===== Register tunnel modules =====
 for cls in [Layer, Tunnel]:
     module_type2class[cls.__name__] = cls
 
-# ---- register pooler modules ----
+# ===== Register pooler modules =====
 for cls in [
-    MeanPooler, StartPooler, MaxPooler, MeanStartMaxPooler,
-    MeanStartEndMaxPooler, MeanStdStartEndMaxMinPooler, NoAffinePooler,
-    NemotoPooler, GraphPooler
+    MeanPooler,
+    StartPooler,
+    MaxPooler,
+    MeanStartMaxPooler,
+    MeanStartEndMaxPooler,
+    MeanStdStartEndMaxMinPooler,
+    NoAffinePooler,
+    NemotoPooler,
+    GraphPooler,
 ]:
     module_type2class[cls.__name__] = cls
 
-__all__ = [
-    # Sequence/Transformer modules
-    'TeacherForcer', 'MaskMaker', 'SelfAttentionLayer', 'PositionalEmbedding',
-    'TransformerEncoder', 'TransformerDecoder', 'AttentionDecoder', 'TransformerLMDecoder',
-    'GreedyDecoder', 'CrossEntropyLoss', 'BCELoss', 'MLP',
 
-    # VAE modules
-    'VAE', 'MinusD_KLLoss', 'Random',
-
-    # Tunnel modules
-    'Layer', 'Tunnel',
-
-    # Pooler modules
-    'MeanPooler', 'StartPooler', 'MaxPooler', 'MeanStartMaxPooler',
-    'MeanStartEndMaxPooler', 'MeanStdStartEndMaxMinPooler', 'NoAffinePooler',
-    'NemotoPooler', 'GraphPooler',
-]
-
-
-# --- Minimal Affine for scalar/tensor-safe scaling (keeps original config) ---
-import torch
-import torch.nn as nn
-from ..core.core import module_type2class
-
+# =============================================================================
+# Minimal constant Affine (for scalar/tensor-safe scaling)
+# =============================================================================
 class Affine(nn.Module):
+    """Constant scalar affine transform.
+
+    Notes:
+        y = x * weight + bias
+        - weight, bias are floats (non-trainable)
+        - Broadcasts safely for arbitrary-shaped tensors
+        - Used for fixed scaling (e.g., -d_kl_factor)
     """
-    y = x * weight + bias
-    - weight, bias: Python float でも可（dtype/device は x に自動追従）
-    - 任意形状の x に対して PyTorch のブロードキャストで安全に適用
-    - 学習対象でない定数変換として使用（論文設定の -d_kl_factor 等）
-    """
+
     def __init__(self, weight: float = 1.0, bias: float = 0.0):
         super().__init__()
-        # 学習させない前提なので Parameter 化せず float のまま保持
         self.weight = float(weight)
         self.bias = float(bias)
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         return x * self.weight + self.bias
 
-# register
-module_type2class['Affine'] = Affine
-__all__.extend([
-    'Affine',
-])
+
+# Register the scalar Affine
+module_type2class["Affine"] = Affine
+
+
+# =============================================================================
+# Public exports
+# =============================================================================
+__all__ = [
+    # Sequence / Transformer modules
+    "TeacherForcer",
+    "MaskMaker",
+    "SelfAttentionLayer",
+    "PositionalEmbedding",
+    "TransformerEncoder",
+    "TransformerDecoder",
+    "AttentionDecoder",
+    "TransformerLMDecoder",
+    "GreedyDecoder",
+    "CrossEntropyLoss",
+    "BCELoss",
+    "MLP",
+    # VAE modules
+    "VAE",
+    "MinusD_KLLoss",
+    "Random",
+    # Tunnel modules
+    "Layer",
+    "Tunnel",
+    # Pooler modules
+    "MeanPooler",
+    "StartPooler",
+    "MaxPooler",
+    "MeanStartMaxPooler",
+    "MeanStartEndMaxPooler",
+    "MeanStdStartEndMaxMinPooler",
+    "NoAffinePooler",
+    "NemotoPooler",
+    "GraphPooler",
+    # Constant Affine
+    "Affine",
+]
