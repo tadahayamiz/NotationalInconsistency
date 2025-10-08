@@ -16,10 +16,13 @@ readme = "README.md"
 requires-python = ">=3.9"
 
 authors = [
-  { name = "Yosuke Kikuchi", email = "uo.ko.teen18@gmail.com" },
-  { name = "Yasuhiro Yoshikai", email = "yyoshikai12@gmail.com" },
-  { name = "Tadahaya Mizuno", email = "tadahaya@gmail.com" },
+  { name = "Yosuke Kikuchi" },
+  { name = "Yasuhiro Yoshikai" },
+  { name = "Tadahaya Mizuno" },
 ]
+
+maintainers = [
+  { name = "Tadahaya Mizuno", email = "tadahaya@gmail.com" }
 
 license = { text = "MIT" }
 
