@@ -11,7 +11,7 @@ build-backend = "setuptools.build_meta"
 # ===================================================================
 [project]
 name = "notate"
-version = "0.4.0"
+version = "0.4.1"
 description = "Notational inconsistency impacts."
 readme = "README.md"
 requires-python = ">=3.9"
