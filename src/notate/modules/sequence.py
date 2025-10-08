@@ -470,7 +470,7 @@ class TransformerDecoder(nn.Module):
             vs[i_layer] = torch.cat([vs[i_layer], v], dim=1)
 
             dropout_p = attn.dropout if attn.training else 0.0
-            attn_output, _ = F._scaled_dot_product_attention(
+            attn_output, _ = F.scaled_dot_product_attention(
                 q, ks[i_layer], vs[i_layer], None, dropout_p
             )
             attn_output = attn_output.transpose(0, 1).contiguous().view(bsz, embed_dim)
@@ -485,7 +485,7 @@ class TransformerDecoder(nn.Module):
             q = F.linear(x, attn.in_proj_weight[: d_model], attn.in_proj_bias[: d_model])
             q = q.contiguous().view(1, bsz * num_heads, head_dim).transpose(0, 1)
             dropout_p = 0.0 if not attn.training else attn.dropout
-            attn_output, _ = F._scaled_dot_product_attention(
+            attn_output, _ = F.scaled_dot_product_attention(
                 q, mem_ks[i_layer], mem_vs[i_layer], mem_attn_mask, dropout_p
             )
             attn_output = attn_output.transpose(0, 1).contiguous().view(bsz, embed_dim)

@@ -220,8 +220,8 @@ class NoAffinePooler(nn.Module):
         Returns:
             [B, 3F] concatenated features after LayerNorm.
         """
-        valid = ~padding_mask  # [T, B]
-        masked_for_max = input + torch.log(valid).unsqueeze(-1)  # log(0) -> -inf
+        valid = (~padding_mask).to(input.dtype)  # [T, B], to float
+        masked_for_max = input + torch.log(valid + 1e-45).unsqueeze(-1)  # log(0) -> -inf
         mean_feat = torch.sum(input * valid.unsqueeze(-1), dim=0) / torch.sum(
             valid, dim=0
         ).unsqueeze(-1)

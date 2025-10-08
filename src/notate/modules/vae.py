@@ -149,7 +149,7 @@ class Random(nn.Module):
             new_data.append(new_vec)
 
         new_data = np.array(new_data)
-        tensor = torch.from_numpy(new_data).float().to("cuda:0")  # original device behavior
+        tensor = torch.from_numpy(new_data).float().to(mu.device)  # original device behavior
         return tensor
 
 
