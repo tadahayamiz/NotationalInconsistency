@@ -39,6 +39,9 @@ from addict import Dict
 from tqdm import tqdm
 
 # ===== Project-local =====
+from notate import enable_autoregistration
+enable_autoregistration()
+
 from notate.core import Model
 from notate.data import NumpyAccumulator, get_accumulator, get_dataloader
 from notate.tools.args import load_config2, subs_vars
