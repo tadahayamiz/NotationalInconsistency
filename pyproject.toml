@@ -23,6 +23,7 @@ authors = [
 
 maintainers = [
   { name = "Tadahaya Mizuno", email = "tadahaya@gmail.com" }
+]
 
 license = { text = "MIT" }
 
@@ -36,7 +37,7 @@ dependencies = [
   "tqdm",
   "matplotlib",
   "addict",
-  "PyYAML",
+  "PyYAML"
 ]
 
 # ===================================================================
