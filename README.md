@@ -1,37 +1,84 @@
-# NotationallInconsistency
+# Official Code for "[Paper Title Here]"
+This is the official repository for our paper:
 
-# Note
-This repository is under construction and will be officially released by [Mizuno group](https://github.com/mizuno-group).  
-Please contact tadahaya[at]gmail.com before publishing your paper using the contents of this repository.  
+> **[Full Paper Title Here]**<br>
+> [Author 1], [Author 2], and [Author 3]<br>
+> *[Journal or Conference Name]*, 2025.<br>
+> [[Link to Paper]](https://example.com) | [[arXiv]](https://arxiv.org/abs/xxxx.xxxxx)
 
-## Publication
-- [preprint](http://arxiv.org/abs/2505.07139)  
+## Abstract
+a brief abstract of the paper.  
 
-## Organization
-------------  
+## Installation
+You can install this package from PyPI.  
 
-    ├── LICENSE  
-    │
-    ├── README.md            <- The top-level README for developers using this project.  
-    │
-    └── notebooks            <- Notebooks for reproducibility.
-        │
-        ├── data             <- Data employed in this study.
-        │
-        ├── src              <- Source code employed in this study.(under construction)
-        │  
-        └── analysis.ipynb     <- ipynb employed in this study.(under construction)
+```bash
+pip install {project_name}
+```
 
-------------
+Alternatively, install the latest version directly from the GitHub repository:
+
+```bash
+pip install git+[repository URL]
+```
+
+## Directory Structure
+```
+.
+├── notebooks/            # example notebooks
+│   └── usage_example.ipynb
+├── src/
+│   └── my_project/       # source codes
+│       ├── init.py
+│       ├── cli.py        # CLI entry point
+│       └── core.py
+├── tests/                # test codes
+│   └── test_module.py
+├── .gitignore
+├── LICENSE               
+├── pyproject.toml        
+└── README.md             
+```
+
+## Requirements
+All dependencies are listed in the pyproject.toml file.  
+
+
+## Installation for Reproducing the Results
+Clone this repository and install the required packages in editable mode. We recommend using a virtual environment.  
+
+```bash
+# Clone the repository
+git clone {repository_URL}
+cd {repository_name}
+
+# Install dependencies
+pip install -e .
+
+```
+
+## How to Cite
+If you find this work useful for your research, please consider citing our paper:  
+
+```
+@article{YourLastName2025,
+  title   = {{Paper Title Here}},
+  author  = {Author 1 and Author 2 and Author 3},
+  journal = {Journal or Conference Name},
+  year    = {2025},
+}
+```
+    
+## License
+This project is licensed under the MIT License.  
+See the LICENSE file for details.  
 
 ## Authors
-- [Yosuke Kikuchi](https://github.com/KikuchiY16)
+- [YOUR NAME](LINK OF YOUR GITHUB PAGE)  
     - main contributor  
 - [Tadahaya Mizuno](https://github.com/tadahayamiz)  
     - correspondence  
 
 ## Contact
-If you have any questions or comments, please feel free to create an issue on github here, or email us:  
-- uo.ko.teen18[at]gmail.com
-- tadahaya[at]gmail.com  
-    - lead contact  
+- [your_name] - [your_address]
+- [Tadahaya Mizuno] - tadahaya[at]gmail.com (lead contact)
