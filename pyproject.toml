@@ -32,6 +32,8 @@ dependencies = [
   "scikit-learn",
   "tqdm",
   "matplotlib",
+  "addict",
+  "PyYAML",
 ]
 
 # ===================================================================
@@ -44,6 +46,7 @@ dev = [
   "black",
   "ruff",
   "isort",
+  "xgboost",
   # "pytest",
 ]
 

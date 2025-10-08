@@ -60,17 +60,14 @@ def __getattr__(name: str):
 # =============================================================================
 # Registry population helper
 # =============================================================================
-def enable_autoregistration():
-    """Populate registries (e.g., register_module) via side-effect imports.
-
-    Call this once at the beginning of a training script to ensure all
-    modules register themselves correctly, for example:
-
-        import notate
-        notate.enable_autoregistration()
-    """
-    import_module(f"{__name__}.modules")
-    import_module(f"{__name__}.training")
-    import_module(f"{__name__}.data")
-    import_module(f"{__name__}.tools")
-    import_module(f"{__name__}.downstream")
+def enable_autoregistration(*, modules=True, training=False, data=False, tools=False, downstream=False):
+    if modules:
+        import_module(f"{__name__}.modules")
+    if training:
+        import_module(f"{__name__}.training")
+    if data:
+        import_module(f"{__name__}.data")
+    if tools:
+        import_module(f"{__name__}.tools")
+    if downstream:
+        import_module(f"{__name__}.downstream")
