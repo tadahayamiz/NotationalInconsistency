@@ -1,5 +1,5 @@
 # ============================================================
-# config.yaml (strict; voc.py準拠: <pad>=0, <start>=1, <end>=2)
+# config.yaml (strict; aligns with voc.py: <pad>=0, <start>=1, <end>=2)
 # ============================================================
 
 # ---------- Preflight (runner gate; architecture-neutral) ----------
@@ -10,11 +10,11 @@ preflight:
   check_files: true
   report_dir: ./qc
   apply_to_train: true
-  apply_to_vals:  true
+  apply_to_vals: true
 
-# ---------- Model (Back to the original architecture) ----------
+# ---------- Model (restored to the original architecture) ----------
 model:
-  # voc.py に合わせた特別トークン（単一情報源）
+  # Special tokens consistent with voc.py (single source of truth)
   special_tokens:
     padding_idx: 0
     start_idx: 1
@@ -34,16 +34,17 @@ model:
     enc_embedding:
       type: PositionalEmbedding
       embedding:
-        num_embeddings: 1123          # ← large_vocs.csv + 3（必要に応じて調整）
+        # large_vocs.csv + 3 (adjust if needed)
+        num_embeddings: 1123
         embedding_dim: 512
-        padding_idx: 0                # ← <pad>=0 を明示
+        padding_idx: 0  # explicit: <pad>=0
       dropout: 0.0
       max_len: 250
 
     encoder:
       type: TransformerEncoder
       layer:
-        norm_first: false  
+        norm_first: false
         d_model: 512
         nhead: 8
         d_ff_factor: 4
@@ -56,9 +57,9 @@ model:
         self_attn.in_proj_bias: zero
         self_attn.out_proj.weight: glorot_uniform
         self_attn.out_proj.bias: zero
-        linear1.weight: {type: normal, mean: 0.0, std: 0.02}
+        linear1.weight: { type: normal, mean: 0.0, std: 0.02 }
         linear1.bias: zero
-        linear2.weight: {type: normal, mean: 0.0, std: 0.02}
+        linear2.weight: { type: normal, mean: 0.0, std: 0.02 }
         linear2.bias: zero
 
     pooler:
@@ -71,7 +72,7 @@ model:
       layers:
         - type: linear
           size: 512
-          init: {bias: zero}
+          init: { bias: zero }
 
     latent2var:
       type: Tunnel
@@ -79,9 +80,9 @@ model:
       layers:
         - type: linear
           size: 512
-          init: {bias: zero}
+          init: { bias: zero }
         - type: function
-          function: {type: softplus}
+          function: { type: softplus }
 
     vae:
       type: VAE
@@ -95,14 +96,14 @@ model:
           bias: 0.0
         - type: linear
           size: 512
-          init: {bias: zero}
+          init: { bias: zero }
 
     dec_embedding:
       type: PositionalEmbedding
       embedding:
         num_embeddings: 129
         embedding_dim: 512
-        padding_idx: 0                # ← <pad>=0 を明示
+        padding_idx: 0  # explicit: <pad>=0
       dropout: 0.0
       max_len: 250
 
@@ -122,9 +123,9 @@ model:
         self_attn.in_proj_bias: zero
         self_attn.out_proj.weight: glorot_uniform
         self_attn.out_proj.bias: zero
-        linear1.weight: {type: normal, mean: 0.0, std: 0.02}
+        linear1.weight: { type: normal, mean: 0.0, std: 0.02 }
         linear1.bias: zero
-        linear2.weight: {type: normal, mean: 0.0, std: 0.02}
+        linear2.weight: { type: normal, mean: 0.0, std: 0.02 }
         linear2.bias: zero
 
     dec2proba:
@@ -132,20 +133,20 @@ model:
       input_size: [batch_size, length, 512]
       layers:
         - type: layernorm
-          args: {elementwise_affine: false}
+          args: { elementwise_affine: false }
         - type: linear
           size: 129
-          init: {bias: zero}
+          init: { bias: zero }
 
     dec_supporter:
       type: GreedyDecoder
-      start_token: 1                  # ← voc.py 準拠
-      end_token: 2                    # ← 追加（警告抑止 & 停止条件の統一）
+      start_token: 1  # consistent with voc.py
+      end_token: 2    # added: suppress warnings & unify stop condition
 
     sequencece:
       type: CrossEntropyLoss
       reduction: sum
-      ignore_index: 0                 # ← <pad>=0 を損失から除外
+      ignore_index: 0  # exclude <pad>=0 from loss
 
     -d_kl:
       type: MinusD_KLLoss
@@ -162,7 +163,7 @@ model:
           function:
             type: transpose
             dim0: 0
-            dim1: 1                 # => [B, T] へ転置
+            dim1: 1  # => transpose to [B, T]
 
   use_modules:
     - teacherforcer
@@ -205,10 +206,10 @@ training:
   runner_seed: 111
   model_seed: 111
 
-  # ★ 追加: エポックごとのデータ差し替えを制御
+  # Optional: rotate datasets every epoch (disabled by default)
   data_rotation:
-    enable: false            # ← デフォルトは無効（単一PKLで完走）
-    steps_per_epoch: 1000    # ← 有効時のみ参照。1エポック=このステップ数
+    enable: false           # default off: train with single PKL end-to-end
+    steps_per_epoch: 1000   # used only when enabled; 1 epoch = this many steps
     ran_tmpl: "./data/Pubchem_chunk_pro_{epoch}_ran.pkl"
     can_tmpl: "./data/Pubchem_chunk_pro_{epoch}_can.pkl"
 
@@ -311,12 +312,11 @@ training:
       org_type: torch.tensor
       batch_dim: 0
 
-  # hooks は runner 側実装（train.py）に依存するため簡素化を維持
+  # Hooks keep parity with runner implementation (train.py); kept minimal
   pre_hooks:
     abortion:
       type: epoch_abort
-      threshold: 2          # ← 2エポックで終了
-
+      threshold: 2  # stop after 2 epochs
     lr_scheduler:
       type: scheduler_alarm
       alarm:
@@ -335,7 +335,6 @@ training:
         type: count
         target: step
         step: 1000
-
     checkpoint:
       type: checkpoint_alarm
       alarm:
@@ -343,7 +342,7 @@ training:
         target: step
         step: 5000
 
-  # === Loops: 元の流れ（prepare_cell_forward / force を復元） ===
+  # === Loops: original flow restored (prepare_cell_forward / force) ===
   train_loop:
     - module: teacherforcer
       input: target
@@ -378,7 +377,7 @@ training:
       output: var
 
     - module: vae
-      input: {mu: mu, var: var}
+      input: { mu: mu, var: var }
       output: latent
 
     - module: latent2dec
@@ -390,7 +389,7 @@ training:
 
     - module: decoder
       mode: forced
-      input: {latent: dec_latent, tgt: dec_input}
+      input: { latent: dec_latent, tgt: dec_input }
       output: dec_output
 
     - module: dec2proba
@@ -419,10 +418,10 @@ training:
 
     - module: enc_embedding
       input: input
-      output: input_emb                # ← 追加
+      output: input_emb  # align with train loop
 
     - module: encoder
-      input: [input_emb, input_padding_mask]   # ← 修正（train と統一）
+      input: [input_emb, input_padding_mask]  # align with train loop
       output: memory
 
     - module: transpose_mask
@@ -442,19 +441,19 @@ training:
       output: var
 
     - module: vae
-      input: {mu: mu, var: var}
+      input: { mu: mu, var: var }
       output: latent
 
     - module: latent2dec
       input: latent
       output: dec_latent
 
-    # 教師強制での出力（partial_teacher / perfect 用）
+    # Teacher forcing path (used for partial_teacher / perfect metrics)
     - module: dec_embedding
       input: dec_input
     - module: decoder
       mode: forced
-      input: {latent: dec_latent, tgt: dec_input}
+      input: { latent: dec_latent, tgt: dec_input }
       output: dec_output
     - module: dec2proba
       input: dec_output
@@ -466,32 +465,32 @@ training:
       input: dec_output
       output: forced
 
-    # greedy 生成準備
+    # Greedy generation setup
     - module: decoder
       mode: prepare_cell_forward
-      input: {latent: dec_latent}
+      input: { latent: dec_latent }
       output: state
     - module: dec_supporter
       mode: init
-      input: {batch_size: batch_size}
+      input: { batch_size: batch_size }
       output: [cur_input, greedy]
 
-    # greedy 生成ループ
+    # Greedy generation loop
     - type: iterate
       length: dec_target_len
       processes:
         - module: dec_embedding
-          input: {input: cur_input, position: iterate_i}
+          input: { input: cur_input, position: iterate_i }
           output: cur_input
         - module: decoder
           mode: cell_forward
-          input: {tgt: cur_input, latent: dec_latent, state: state, position: iterate_i}
+          input: { tgt: cur_input, latent: dec_latent, state: state, position: iterate_i }
           output: [cur_output, state]
         - module: dec2proba
           input: cur_output
         - module: dec_supporter
           mode: add
-          input: {cur_proba: cur_output, outs: greedy}
+          input: { cur_proba: cur_output, outs: greedy }
           output: [cur_input, greedy]
 
     - module: dec_supporter
