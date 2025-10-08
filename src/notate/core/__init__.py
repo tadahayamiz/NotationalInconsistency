@@ -27,7 +27,7 @@ from .core import (
     module_type2class,
     PRINT_PROCESS,
     register_module,
-    register_module_class,
+    resolve_module_class,
     get_module,
     build_module_from_config,
 )
@@ -43,7 +43,7 @@ __all__ = [
     # Utilities
     "PRINT_PROCESS",
     "register_module",
-    "register_module_class",
+    "resolve_module_class",
     "get_module",
     "build_module_from_config",
 ]
