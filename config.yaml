@@ -497,7 +497,7 @@ training:
 
   loss_names: ["sequencece", "-d_kl"]
   val_loop_add_train: false
-  abortion: { step: null, epoch: null, time: null }
+  abortion: { step: null, epoch: 2, time: null }
   rstate: {}
   stocks: { score_df: "" }
   steps_per_epoch: 1000
