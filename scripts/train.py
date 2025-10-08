@@ -806,3 +806,4 @@ if __name__ == '__main__':
     # 重要: 既定の 'config' を重ねない。CLI 指定の --config のみを採用
     config = load_config2("", default_configs=[])
     main(config, sys.argv)
+    print(">> Finished")
